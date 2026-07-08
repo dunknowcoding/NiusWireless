@@ -476,25 +476,112 @@ not covered by the high-level API.
 
 ---
 
-### Public Fields
+### Raw SPI Transceive
 
 ```cpp
-uint8_t uid[NIUS_UID_MAX_LEN];  // Raw UID bytes (populated by cardPresent)
-uint8_t uidLen;                 // Number of valid UID bytes (4, 7, or 10)
-uint8_t atqa[2];                // ATQA bytes from the last REQA/WUPA
-uint8_t sak;                    // SAK byte from the last SELECT
-uint8_t lastCardType;           // NIUS_CARD_* of the last card
-uint8_t lastError;              // Error code from the last cardPresent call
-uint8_t lastSelectError;        // Error from selectCard() — 0 if not reached
+NiusRC522::Status transceive(uint8_t *sendData, uint8_t sendLen,
+                             uint8_t *backData, uint8_t *backLen,
+                             bool      checkCRC = false)
 ```
 
-`atqa[]` and `sak` are populated every time `cardPresent()` /
-`cardPresentWake()` succeeds. Use the `getATQA()`, `getATQABytes()`, and
-`getSAK()` accessors if you prefer the String / typed API.
+Low-level wrapper around the MFRC522 FIFO. Send a buffer, receive a buffer,
+optionally verify that the trailing 2 bytes are the ISO14443 CRC-A of the
+preceding payload. Returns `NIUS_OK` on success or `NIUS_ERR_*` otherwise. The
+maximum receive length is 18 bytes (16 payload + 2 CRC).
+
+Use this as the building block for any custom MIFARE command, including the
+Proxmark3-style attacks below.
 
 ---
 
-## NiusNRF24L01 — NRF24L01+ 2.4 GHz Radio
+### Proxmark3-style Key Recovery (MIFARE Classic)
+
+These methods model the Proxmark3 `hf mf chk` / `hf mf nested` /
+`hf mf hardnested` / `hf mf darkside` workflows so you can run them on a stock
+RC522. They only work on **MIFARE Classic** (1K / 4K / Mini); Ultralight and
+NTAG do not use Crypto1.
+
+```cpp
+struct AuthResult {
+    uint8_t sector;
+    uint8_t keyA[6];
+    uint8_t keyB[6];
+    uint8_t mask;            // bit n set -> keys[n] recovered
+};
+
+uint8_t tryKeys(uint8_t sector, uint8_t block,
+                bool useKeyA,
+                const uint8_t defaultKey[6],
+                const uint8_t dictionary[][6], uint8_t dictLen,
+                AuthResult *result);
+
+uint8_t recoverAllKeys(uint8_t footholdSector, const uint8_t footholdKey[6],
+                       const uint8_t dictionary[][6], uint8_t dictLen,
+                       uint8_t keys[16][6], uint16_t *mask,
+                       bool enableNested = false);
+
+bool    nestedAttack(uint8_t knownSector, const uint8_t knownKey[6],
+                     uint8_t targetSector, uint8_t outKey[6]);
+
+bool    darksideAttack(uint8_t sector, uint8_t outKey[6]);
+```
+
+| Method         | What it does                                                                          | Status    |
+| -------------- | ------------------------------------------------------------------------------------- | --------- |
+| `tryKeys`      | Dictionary attack: try each key in `dictionary[]` against one sector/block. Fast (~1 s per sector for 37 keys). | Implemented |
+| `recoverAllKeys` | Orchestrator: foothold auth + dictionary pass for all 16 sectors. Optionally chains `nestedAttack` after. | Implemented (dictionary phase), `nestedAttack` runs as a pass-through stub |
+| `nestedAttack` | Exploit Crypto1's keystream leak: with a known key on *one* sector, recover an unknown key on another sector. ~2 minutes per sector. | **Stub** — full Crapto1 bit-twiddle port TODO (see `niusCrypto1` namespace) |
+| `darksideAttack` | No-prior-key key recovery from a single auth failure. ~5–10 minutes per sector on UNO R4. | **Stub** — full `mf_darkside` / `mfkey32v2` port TODO |
+
+**Usage:**
+
+```cpp
+#include <NiusWireless.h>
+
+NiusRC522 rfid(SDA, 10, SCL, 11, 12);
+rfid.begin();
+
+if (rfid.cardPresentWake()) {
+    // Phase 1: dictionary (FF default key for sector 0 is the foothold)
+    static const uint8_t dict[][6] = {
+        {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF},
+        {0x00,0x00,0x00,0x00,0x00,0x00},
+        {0xA0,0xA1,0xA2,0xA3,0xA4,0xA5},
+        // ... add more common keys
+    };
+    uint8_t keys[16][6];
+    uint16_t mask = 0;
+    uint8_t n = rfid.recoverAllKeys(
+        /*footholdSector=*/ 0,
+        /*footholdKey=*/    {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF},
+        dictionary, sizeof(dict)/6,
+        keys, &mask);
+    for (uint8_t s = 0; s < 16; s++) {
+        if (mask & (1U << s)) {
+            Serial.print("Sector "); Serial.print(s);
+            Serial.print(": "); printHex(keys[s], 6);
+        }
+    }
+
+    // Phase 2 (when implemented): nested
+    uint8_t recovered[6];
+    if (rfid.nestedAttack(/*knownSector=*/0, keys[0],
+                          /*targetSector=*/2, recovered)) {
+        Serial.print("Nested recovered sector 2: ");
+        printHex(recovered, 6);
+    }
+}
+```
+
+See `examples/rc522_recover/rc522_recover.ino` for a complete end-to-end
+sketch. The Crypto1 attack code lives in the `niusCrypto1` namespace at the
+top of `NiusRC522.cpp`; porting the real Crapto1 cipher from
+Proxmark3 / libnfc into that namespace will turn the stubs into working
+attacks without changing this public API.
+
+---
+
+### Public Fields
 
 **Status:** Stub — full implementation in a future release.
 

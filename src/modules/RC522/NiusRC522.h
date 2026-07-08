@@ -338,6 +338,128 @@ public:
     uint8_t dumpUltralight(void (*printer)(uint8_t *));
 
     /* -------------------------------------------------------------------
+     * Low-level transceive
+     * Use these for custom protocols, raw command access, or to implement
+     * key-recovery attacks (nested authentication, darkside, etc.).
+     * ------------------------------------------------------------------- */
+
+    /**
+     * transceive() — Send a raw command to the card and receive the
+     * response. This is the lowest-level data-path: it builds a
+     * Transceive command on the MFRC522, waits for the FIFO, copies
+     * the response back. Equivalent to the standard MFRC522 library's
+     * PCD_TransceiveData().
+     *
+     * sendData   — bytes to send (without CRC; the chip appends it)
+     * sendLen    — number of bytes to send (0..16)
+     * backData   — buffer for the response (must be ≥ sendLen + 2)
+     * backLen    — in: capacity of backData; out: number of bytes received
+     * validBits  — out: number of valid bits in the last received byte
+     *               (used for short ACKs like 4-bit NAK); pass nullptr
+     *               if you don't need it
+     * rxAlign    — bit position to align the first received byte (0 = none)
+     * checkCRC   — if true (default), the MFRC522 hardware verifies the
+     *               CRC in the response; if it fails, the function returns
+     *               NIUS_ERR_CRC
+     *
+     * Returns NIUS_OK on success, an NIUS_ERR_* code otherwise.
+     */
+    uint8_t transceive(uint8_t *sendData, uint8_t sendLen,
+                       uint8_t *backData, uint8_t *backLen,
+                       uint8_t *validBits = nullptr,
+                       uint8_t rxAlign = 0,
+                       bool checkCRC = true);
+
+    /* -------------------------------------------------------------------
+     * Key recovery (Proxmark3-style attacks on MIFARE Classic)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * tryKeys() — Dictionary attack. Try every 6-byte key in `keys`
+     * against `sector` (using Key A) until one authenticates. On
+     * success, the working key is copied to `foundKey` and the function
+     * returns true.
+     *
+     * Equivalent to the standard library's loop over MIFARE_Key plus
+     * PCD_Authenticate, with the cleanup (stopCrypto) after every
+     * attempt so a wrong key never leaves the crypto engine engaged.
+     */
+    bool tryKeys(uint8_t sector,
+                 const uint8_t keys[][6], uint8_t numKeys,
+                 uint8_t *foundKey);
+
+    /**
+     * recoverAllKeys() — Try to recover every MIFARE Classic key on the
+     * card, given one known key. Equivalent to the Proxmark3 `hf mf
+     * nested` / `hf mf hardnested` workflow at a high level:
+     *
+     *   1. Use the known key on `knownSector` to authenticate.
+     *   2. Try the dictionary of well-known keys against every other
+     *      sector. (Cheap, often works on cards shipped with default
+     *      or vendor-default keys.)
+     *   3. If crypto1 is implemented, run a nested attack against any
+     *      sector that's still unknown, using the known sector's
+     *      authenticated state to leak key bits.
+     *
+     * Inputs:
+     *   knownSector    — sector that has a known key (0..15)
+     *   knownKey       — 6-byte key for that sector
+     *   dictionary     — array of candidate keys to try
+     *   dictionaryLen  — number of candidate keys
+     *   recoveredKeys  — out: 16x6 array; sector i's key (if recovered)
+     *                     is written to recoveredKeys[i], or left all-zero
+     *                     if not recoverable
+     *   recoveredMask  — out: 16-bit bitmask; bit i set if sector i
+     *                     was recovered
+     *   maxNestedAttempts — max attempts per sector for the nested attack
+     *                     (0 = skip the nested attack)
+     *
+     * Returns the number of keys recovered.
+     */
+    uint8_t recoverAllKeys(uint8_t knownSector, const uint8_t *knownKey,
+                            const uint8_t dictionary[][6], uint8_t dictionaryLen,
+                            uint8_t recoveredKeys[][6],
+                            uint16_t *recoveredMask,
+                            uint16_t maxNestedAttempts = 4096);
+
+    /**
+     * nestedAttack() — Recover a key for `targetSector` by exploiting
+     * the MIFARE Classic Crypto1 cipher, using `knownSector`'s key as
+     * the foothold. Modelled on the Proxmark3 `hf mf nested` / `hf mf
+     * hardnested` commands.
+     *
+     * This is a *real* nested attack — it requires the Crypto1 cipher
+     * to be implemented (it is, see niusCrypto1 in NiusRC522.cpp).
+     * The attack takes anywhere from a few hundred to a few thousand
+     * auth attempts per sector; on the Arduino Uno / UNO R4 it can
+     * run for several minutes per sector. Use the `progress` callback
+     * to drive a UI.
+     *
+     * Returns true and fills `recoveredKey` on success, false otherwise.
+     */
+    bool nestedAttack(uint8_t knownSector, const uint8_t *knownKey,
+                      uint8_t targetSector, uint8_t *recoveredKey,
+                      uint16_t maxAttempts = 4096,
+                      void (*progress)(uint8_t sector, uint16_t attempts) = nullptr);
+
+    /**
+     * darksideAttack() — Recover a key for a sector using a single
+     * auth attempt. The Crypto1 cipher leaks bits of the keystream in
+     * the NAK response; the darkside attack collects enough bits to
+     * recover the full 48-bit key. Modelled on the Proxmark3
+     * `hf mf darkside` command.
+     *
+     * No prior known key is required — the attack works against any
+     * sector whose key is not FFFFFFFFFFFF. Typically takes ~2800
+     * auth attempts (a few minutes on UNO R4).
+     *
+     * Returns true and fills `recoveredKey` on success.
+     */
+    bool darksideAttack(uint8_t targetSector, uint8_t *recoveredKey,
+                        uint16_t maxAttempts = 4096,
+                        void (*progress)(uint16_t attempts) = nullptr);
+
+    /* -------------------------------------------------------------------
      * MIFARE Ultralight / NTAG operations
      * No authentication required. Pages are 4 bytes, addressed by page
      * number. READ returns 4 consecutive pages (16 bytes) at a time.

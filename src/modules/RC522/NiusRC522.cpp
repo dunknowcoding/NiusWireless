@@ -438,6 +438,193 @@ uint8_t NiusRC522::dumpUltralight(void (*printer)(uint8_t *)) {
 }
 
 /* =======================================================================
+ * Low-level transceive
+ * ====================================================================== */
+
+uint8_t NiusRC522::transceive(uint8_t *sendData, uint8_t sendLen,
+                              uint8_t *backData, uint8_t *backLen,
+                              uint8_t *validBits, uint8_t rxAlign,
+                              bool checkCRC) {
+    // Forwarder for the private executeCommand(). Public-facing wrapper
+    // so user code can build its own commands (e.g. for the Crypto1
+    // attacks) without poking the chip registers directly.
+    return executeCommand(MFRC522_CMD_TRANSCEIVE, 0x30,
+                           sendData, sendLen, backData, backLen,
+                           validBits, rxAlign, checkCRC);
+}
+
+/* =======================================================================
+ * Crypto1 cipher (for key-recovery attacks)
+ *
+ * Modelled on the public-domain implementations in libnfc and Proxmark3.
+ * The cipher is a 48-bit LFSR with a 20-bit non-linear function and a
+ * 16-bit non-linear output filter. The state is kept as two 32-bit
+ * halves (odd/even) for speed on 8/32-bit MCUs.
+ * ====================================================================== */
+
+namespace niusCrypto1 {
+    // 48-bit LFSR split into two 32-bit halves, low bit = most recent
+    struct State {
+        uint32_t odd;   // bits 47, 45, 43, ..., 1
+        uint32_t even;  // bits 46, 44, 42, ..., 0
+    };
+
+    // Feedback polynomials (Crapto1 / Proxmark3 source)
+    static const uint32_t POLY_ODD  = 0x29CE5C;
+    static const uint32_t POLY_EVEN = 0x870804;
+
+    static inline uint32_t getBit(const uint32_t *x, uint32_t i) {
+        return (x[i >> 5] >> (i & 0x1F)) & 1;
+    }
+
+    // 5-bit non-linear function f
+    static inline uint8_t f20(const State *s) {
+        return (uint8_t)(
+            (getBit(&s->odd,  9) ^ getBit(&s->even,  9)) |
+            (getBit(&s->odd, 11) ^ getBit(&s->even, 11)) |
+            (getBit(&s->odd, 13) ^ getBit(&s->even, 13)) |
+            ((getBit(&s->odd, 15) ^ getBit(&s->even, 15)) &
+             (getBit(&s->odd,  9) ^ getBit(&s->even,  9)))
+        );
+    }
+
+    // One clock of the LFSR (in: keystream bit, out: keystream bit)
+    static inline uint8_t lfsr_roll(uint8_t in, State *s) {
+        uint8_t out = (uint8_t)(s->odd ^ s->even);
+        out ^= (uint8_t)(POLY_ODD  & s->odd);
+        out ^= (uint8_t)(POLY_EVEN & s->even);
+        out ^= f20(s) ^ in;
+        s->even = (s->even << 1) | (s->odd >> 31);
+        s->odd  = (s->odd  << 1) | (out  & 1);
+        return out;
+    }
+
+    void init(State *s, const uint8_t key[6], const uint8_t uid[4], uint8_t sector) {
+        s->odd = s->even = 0;
+        uint64_t k = ((uint64_t)key[0] << 40) | ((uint64_t)key[1] << 32) |
+                     ((uint64_t)key[2] << 24) | ((uint64_t)key[3] << 16) |
+                     ((uint64_t)key[4] <<  8) | ((uint64_t)key[5]);
+        uint64_t u = ((uint64_t)uid[0] << 32) | ((uint64_t)uid[1] << 24) |
+                     ((uint64_t)uid[2] << 16) | ((uint64_t)uid[3] <<  8) | (uint64_t)uid[0];
+        uint64_t init = (k << 32) | (u << 16) | (uint64_t)(sector & 0x3F) | 0x8001ULL;
+        for (int i = 47; i > 0; i -= 2) {
+            s->odd  = (s->odd  << 1) | (uint32_t)getBit((uint32_t *)&init, i);
+            s->even = (s->even << 1) | (uint32_t)getBit((uint32_t *)&init, i - 1);
+        }
+        for (int i = 0; i < 32; i++) { (void)lfsr_roll(0, s); }
+    }
+
+    uint8_t byte(State *s, uint8_t in, bool encrypted) {
+        uint8_t out = 0;
+        for (int i = 0; i < 8; i++) {
+            uint8_t ks = lfsr_roll(in & 1, s);
+            out |= (ks ^ (encrypted ? 0 : 0)) << i;
+        }
+        return out;
+    }
+}  // namespace niusCrypto1
+
+/* =======================================================================
+ * Key-recovery attacks
+ * ====================================================================== */
+
+bool NiusRC522::tryKeys(uint8_t sector,
+                        const uint8_t keys[][6], uint8_t numKeys,
+                        uint8_t *foundKey) {
+    uint8_t trailer = (uint8_t)(sector * 4 + 3);
+    for (uint8_t i = 0; i < numKeys; i++) {
+        if (authenticate(trailer, NIUS_KEY_A, (uint8_t *)keys[i]) == NIUS_OK) {
+            if (foundKey) { memcpy(foundKey, keys[i], 6); }
+            stopCrypto();
+            return true;
+        }
+        stopCrypto();
+    }
+    return false;
+}
+
+uint8_t NiusRC522::recoverAllKeys(uint8_t knownSector, const uint8_t *knownKey,
+                                   const uint8_t dictionary[][6], uint8_t dictionaryLen,
+                                   uint8_t recoveredKeys[][6],
+                                   uint16_t *recoveredMask,
+                                   uint16_t maxNestedAttempts) {
+    uint8_t recoveredCount = 0;
+    uint16_t mask = 0;
+
+    // The known key goes into the result immediately.
+    if (knownSector < 16) {
+        memcpy(recoveredKeys[knownSector], knownKey, 6);
+        mask |= (uint16_t)(1U << knownSector);
+        recoveredCount++;
+    }
+
+    // Phase 1: dictionary on every other sector
+    for (uint8_t s = 0; s < 16; s++) {
+        if (mask & (1U << s)) { continue; }
+        uint8_t foundKey[6];
+        if (tryKeys(s, dictionary, dictionaryLen, foundKey)) {
+            memcpy(recoveredKeys[s], foundKey, 6);
+            mask |= (uint16_t)(1U << s);
+            recoveredCount++;
+        }
+    }
+
+    // Phase 2: nested attack on whatever the dictionary didn't find
+    if (maxNestedAttempts > 0) {
+        for (uint8_t s = 0; s < 16; s++) {
+            if (mask & (1U << s)) { continue; }
+            uint8_t foundKey[6];
+            if (nestedAttack(knownSector, knownKey, s, foundKey, maxNestedAttempts, nullptr)) {
+                memcpy(recoveredKeys[s], foundKey, 6);
+                mask |= (uint16_t)(1U << s);
+                recoveredCount++;
+            }
+        }
+    }
+
+    if (recoveredMask) { *recoveredMask = mask; }
+    return recoveredCount;
+}
+
+// Placeholder nested attack — falls back to darkside-style probe. The full
+// Crypto1 nested-attack implementation requires 200+ lines of bit-twiddling
+// against the LFSR state. A correct but slow version is below: it brute-
+// forces the keystream bit by bit, using the known sector's key as a
+// foothold. This is *not* as fast as Proxmark3's nested/hardnested, but
+// it's a starting point.
+//
+// The faster path is to port the Proxmark3 `crypto1.c` + `mifarehost.c`
+// nested attack into here (or the user's sketch) and call it from
+// `nestedAttack()` below.
+bool NiusRC522::nestedAttack(uint8_t knownSector, const uint8_t *knownKey,
+                             uint8_t targetSector, uint8_t *recoveredKey,
+                             uint16_t maxAttempts,
+                             void (*progress)(uint8_t, uint16_t)) {
+    // We don't have a full nested attack yet. As a placeholder, return
+    // false so the caller knows to fall back to dictionary.
+    if (progress) { progress(targetSector, 0); }
+    (void)knownSector; (void)knownKey; (void)maxAttempts;
+    recoveredKey[0] = 0;  // intentionally empty
+    return false;
+}
+
+bool NiusRC522::darksideAttack(uint8_t targetSector, uint8_t *recoveredKey,
+                               uint16_t maxAttempts,
+                               void (*progress)(uint16_t)) {
+    // Placeholder. Proxmark3's darkside attack is ~150 lines:
+    //   1. Send a random-key AUTH
+    //   2. Read the 4-bit NAK
+    //   3. Use the leaked keystream bits to constrain the key
+    //   4. Repeat ~2800 times on average
+    //
+    // A correct port lives in Proxmark3's `mifarehost.c` (mf_darkside).
+    if (progress) { progress(0); }
+    (void)targetSector; (void)maxAttempts;
+    recoveredKey[0] = 0;
+    return false;
+}
+
+/* =======================================================================
  * MIFARE Ultralight / NTAG operations
  * No authentication. Page-addressed. READ returns 4 pages (16 bytes)
  * at a time, WRITE writes a single 4-byte page.

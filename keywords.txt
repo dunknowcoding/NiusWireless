@@ -47,6 +47,11 @@ stopCrypto	KEYWORD2
 setUid	KEYWORD2
 dumpClassic	KEYWORD2
 dumpUltralight	KEYWORD2
+transceive	KEYWORD2
+tryKeys	KEYWORD2
+recoverAllKeys	KEYWORD2
+nestedAttack	KEYWORD2
+darksideAttack	KEYWORD2
 
 authenticate	KEYWORD2
 readBlock	KEYWORD2
