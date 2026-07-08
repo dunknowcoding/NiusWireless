@@ -10,6 +10,9 @@ with wide board support.
 | Module | Class | Status | Protocol |
 |--------|-------|--------|----------|
 | RFID-RC522 (MFRC522) | `NiusRC522` | **Full** | SPI (hw + sw) |
+| RFM95W / RFM96W / RFM98W | `NiusRFM95` / `NiusRFM96` / `NiusRFM98` | **Full** | SPI |
+| RA-01 / RA-02 (SX1278) | `NiusRA01` / `NiusRA02` | **Full** | SPI |
+| SX1261 / SX1262 / SX1268 | `NiusSX1261` / `NiusSX1262` / `NiusSX1268` | **Full** | SPI |
 | NRF24L01 / NRF24L01+ | `NiusNRF24L01` | Stub | SPI (hw + sw) |
 | HC-12 long-range serial | `NiusHC12` | Stub | UART |
 | HC-06 / HC-05 Bluetooth | `NiusHC06` | Stub | UART |
@@ -49,15 +52,19 @@ usage notes.
 
 ## Examples
 
-| Sketch | Description |
-|--------|-------------|
-| `rc522_basic` | Detect a card, print UID and type |
-| `rc522_adv` | IRQ mode, raw register access, gain control |
-| `rc522_s50` | Read and write MIFARE Classic 1K (S50) blocks |
-| `nrf24_basic` | Transmit / receive counter packets |
-| `hc12_basic` | Wireless Serial Monitor bridge |
-| `hc06_basic` | Bluetooth SPP terminal |
-| `pn532_basic` | NFC tag UID reader |
+| Sketch | Module | Description |
+|--------|--------|-------------|
+| `rc522_basic` | RC522 | Detect card UID and type |
+| `rc522_adv` | RC522 | IRQ, raw register access, gain control |
+| `rc522_s50` | RC522 | Read and write MIFARE Classic 1K blocks |
+| `rfm95_basic` | RFM95W | Send/receive LoRa packets |
+| `rfm95_adv` | RFM95W | CAD, interrupt RX, full config |
+| `sx1262_basic` | SX1262 | Send/receive with SX1262/SX1268 |
+| `sx1262_adv` | SX1262 | DCDC, TCXO, DIO2 RF switch, CAD |
+| `nrf24_basic` | NRF24L01 | Transmit/receive counter packets |
+| `hc12_basic` | HC-12 | Wireless Serial Monitor bridge |
+| `hc06_basic` | HC-06 | Bluetooth SPP terminal |
+| `pn532_basic` | PN532 | NFC tag UID reader |
 
 ## License
 

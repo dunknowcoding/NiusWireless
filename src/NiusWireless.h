@@ -33,5 +33,8 @@
 #include "modules/HC12/NiusHC12.h"
 #include "modules/HC06/NiusHC06.h"
 #include "modules/PN532/NiusPN532.h"
+#include "modules/LoRa/NiusLoRaBase.h"
+#include "modules/LoRa/NiusLoRaSX127x.h"
+#include "modules/LoRa/NiusLoRaSX126x.h"
 
 #endif // NIUS_WIRELESS_H
