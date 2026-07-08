@@ -294,6 +294,49 @@ public:
      */
     void stopCrypto();
 
+    /**
+     * setUid() — Change the UID of a MIFARE Classic card. Equivalent to
+     * the standard MFRC522 library's `MIFARE_SetUid(newUid, uidSize, true)`.
+     *
+     * Authenticates sector 0 with the MIFARE factory key (FFFFFFFFFFFF)
+     * using Key A, then writes a new block 0 to the card. On a Chinese
+     * "CUID" / "DirectWrite" / "Gen2" card the write is accepted through
+     * a backdoor even though block 0 is normally read-only; on a stock
+     * MIFARE Classic card the write is correctly rejected.
+     *
+     * newUid  — pointer to the new UID bytes (4 bytes for Classic 1K / Mini)
+     * uidSize — number of UID bytes (typically 4)
+     *
+     * Returns NIUS_OK on success. The caller should re-scan the card with
+     * cardPresent() to see the new UID.
+     */
+    uint8_t setUid(uint8_t *newUid, uint8_t uidSize);
+
+    /**
+     * dumpClassic() — Dump every MIFARE Classic block that the supplied
+     * key can authenticate. Equivalent to the standard library's
+     * `PICC_DumpToSerial(&(uid))` but factored to take a callback
+     * function so you can route the output to Serial, an LCD, a file, etc.
+     *
+     * key         — 6-byte key to try on every sector (use
+     *                `{0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}` for the factory key)
+     * printer     — function pointer that receives one 16-byte block at a
+     *                time. Pass `nullptr` if you only want the summary.
+     *
+     * Returns the number of sectors that authenticated successfully.
+     */
+    uint8_t dumpClassic(uint8_t *key, void (*printer)(uint8_t *));
+
+    /**
+     * dumpUltralight() — Dump every MIFARE Ultralight / NTAG page that
+     * responds. Each call to `printer` passes 16 bytes (4 consecutive
+     * pages). Stops on the first NAK. Returns the number of pages dumped.
+     *
+     * printer — function pointer that receives one 16-byte chunk at a
+     *           time. Pass `nullptr` if you only want the count.
+     */
+    uint8_t dumpUltralight(void (*printer)(uint8_t *));
+
     /* -------------------------------------------------------------------
      * MIFARE Ultralight / NTAG operations
      * No authentication required. Pages are 4 bytes, addressed by page

@@ -380,6 +380,64 @@ void NiusRC522::stopCrypto() {
 }
 
 /* =======================================================================
+ * High-level helpers — modelled on the standard MFRC522 library's
+ * MIFARE_SetUid / PICC_DumpToSerial, so sketches can do the natural
+ * "dump it / change the UID" thing in a single call.
+ * ====================================================================== */
+
+uint8_t NiusRC522::setUid(uint8_t *newUid, uint8_t uidSize) {
+    if (!newUid || uidSize == 0 || uidSize > 15) { return NIUS_ERR_PARAM; }
+
+    // Build the new block 0:  [UID bytes] [BCC] [12 bytes of zeros]
+    // For a 4-byte UID (MIFARE Classic 1K / Mini) this is the standard layout.
+    uint8_t factoryKey[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t block0[16] = {0};
+    memcpy(block0, newUid, uidSize);
+    for (uint8_t i = 0; i < uidSize; i++) { block0[uidSize] ^= newUid[i]; }  // BCC
+    // Bytes uidSize+1..15 left at 0 (manufacturer data — CUID cards accept zeros)
+
+    if (authenticate(3, NIUS_KEY_A, factoryKey) != NIUS_OK) {
+        if (authenticate(3, NIUS_KEY_B, factoryKey) != NIUS_OK) {
+            return NIUS_ERR_AUTH;
+        }
+    }
+    uint8_t r = writeBlock(0, block0);
+    stopCrypto();
+    return r;
+}
+
+uint8_t NiusRC522::dumpClassic(uint8_t *key, void (*printer)(uint8_t *)) {
+    uint8_t okSectors = 0;
+    for (uint8_t s = 0; s < 16; s++) {
+        uint8_t trailer = s * 4 + 3;
+        if (authenticate(trailer, NIUS_KEY_A, key) != NIUS_OK) {
+            stopCrypto();
+            continue;
+        }
+        okSectors++;
+        for (uint8_t b = 0; b < 4; b++) {
+            uint8_t buf[16];
+            if (readBlock(s * 4 + b, buf) == NIUS_OK && printer) {
+                printer(buf);
+            }
+        }
+        stopCrypto();
+    }
+    return okSectors;
+}
+
+uint8_t NiusRC522::dumpUltralight(void (*printer)(uint8_t *)) {
+    uint8_t pages = 0;
+    for (uint8_t p = 0; p < 64; p += 4) {
+        uint8_t buf[16];
+        if (readPage(p, buf) != NIUS_OK) { break; }
+        pages += 4;
+        if (printer) { printer(buf); }
+    }
+    return pages;
+}
+
+/* =======================================================================
  * MIFARE Ultralight / NTAG operations
  * No authentication. Page-addressed. READ returns 4 pages (16 bytes)
  * at a time, WRITE writes a single 4-byte page.

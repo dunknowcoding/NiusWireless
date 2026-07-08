@@ -44,6 +44,9 @@ getSAK	KEYWORD2
 getNTAGVersion	KEYWORD2
 halt	KEYWORD2
 stopCrypto	KEYWORD2
+setUid	KEYWORD2
+dumpClassic	KEYWORD2
+dumpUltralight	KEYWORD2
 
 authenticate	KEYWORD2
 readBlock	KEYWORD2
