@@ -132,6 +132,11 @@ void loop() {
         Serial.println("Write OK");
     }
 
+    // Some MIFARE Classic cards need a few ms after a write before they
+    // can service the next command (the card's internal EEPROM write is
+    // still completing). 5 ms is the typical "safe" delay.
+    delay(5);
+
     // --- Read the block back and verify ---
     Serial.print("Reading block ");
     Serial.print(TARGET_BLOCK);
