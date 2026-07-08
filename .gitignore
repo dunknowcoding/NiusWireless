@@ -1,0 +1,40 @@
+# --- Build outputs ---
+build/
+dist/
+*.bin
+*.hex
+*.elf
+*.map
+
+# --- Arduino / IDE ---
+*.bak
+*.orig
+.arduino15/
+.arduino-ci*/
+
+# --- Testing & Debug (excluded from release) ---
+test/
+tests/
+debug/
+Debug/
+examples/*_test/
+examples/*_debug/
+
+# --- Python tooling ---
+__pycache__/
+*.pyc
+.venv/
+.env/
+*.egg-info/
+
+# --- Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini

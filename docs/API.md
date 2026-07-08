@@ -1,0 +1,601 @@
+# NiusWireless API Reference
+
+Version 1.0.0
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Supported Boards](#supported-boards)
+3. [Shared (Base) API](#shared-base-api)
+4. [NiusRC522 — RFID-RC522 (MFRC522)](#niusrc522--rfid-rc522-mfrc522)
+5. [NiusNRF24L01 — NRF24L01+ 2.4 GHz Radio](#niusnrf24l01--nrf24l01-24-ghz-radio)
+6. [NiusHC12 — HC-12 Long-Range Serial](#niushc12--hc-12-long-range-serial)
+7. [NiusHC06 — HC-06 / HC-05 Bluetooth SPP](#niushc06--hc-06--hc-05-bluetooth-spp)
+8. [NiusPN532 — PN532 NFC/RFID](#niuspn532--pn532-nfcrfid)
+9. [Return Codes](#return-codes)
+10. [Card Type Constants](#card-type-constants)
+11. [Wiring Quick-Reference](#wiring-quick-reference)
+
+---
+
+## Overview
+
+NiusWireless is an expandable Arduino library providing a unified, Arduino-style API
+for popular wireless and RF modules.  Include a single header and pick the module
+class you need:
+
+```cpp
+#include <NiusWireless.h>
+```
+
+Each module class inherits four common methods from `NiusBase` (`begin`, `isReady`,
+`reset`, `getVersion`) and adds its own module-specific API.
+
+---
+
+## Supported Boards
+
+| Family | Examples | Detection Macro |
+|--------|----------|-----------------|
+| Renesas RA (UNO R4) | Arduino UNO R4 WiFi, UNO R4 Minima | `ARDUINO_ARCH_RENESAS` |
+| ArduinoNRF nRF52 | ProMicro nRF52840, nice!nano v2, SuperMini, XIAO nRF52840 | `ARDUINO_ARCH_NRF52` / `NRF52_SERIES` |
+| RP2040 / RP2350 | Raspberry Pi Pico, Pico W, Pico 2 W | `ARDUINO_ARCH_RP2040` |
+| ESP32 | ESP32, ESP32-S3, ESP32-C3 | `ARDUINO_ARCH_ESP32` |
+| ESP8266 | NodeMCU, Wemos D1 mini | `ARDUINO_ARCH_ESP8266` |
+| STM32 | STM32F103 (Blue Pill), STM32F4 | `ARDUINO_ARCH_STM32` |
+| SAMD | Arduino Zero, MKR series | `ARDUINO_ARCH_SAMD` |
+| AVR | UNO R3, Mega 2560, Nano, Pro Mini | `ARDUINO_ARCH_AVR` |
+
+---
+
+## Shared (Base) API
+
+All module classes implement the following methods, inherited from `NiusBase`.
+
+---
+
+### `begin()`
+
+```cpp
+bool begin()
+```
+
+Initialise the module hardware.  Configure GPIO pins, start SPI/I2C/UART, reset the
+chip, and verify communication.  Call once from `setup()`.
+
+**Returns:** `true` on success, `false` if the module is not detected.
+
+---
+
+### `isReady()`
+
+```cpp
+bool isReady()
+```
+
+Check whether the module is initialised and responding.
+
+**Returns:** `true` if ready.
+
+---
+
+### `reset()`
+
+```cpp
+void reset()
+```
+
+Perform a software reset.  The module stays initialised (GPIO and SPI/UART remain
+configured) after the call.
+
+---
+
+### `getVersion()`
+
+```cpp
+String getVersion()
+```
+
+Return a human-readable version string, e.g. `"MFRC522 v2.0"`.
+
+---
+
+## NiusRC522 — RFID-RC522 (MFRC522)
+
+**Header:** `src/modules/RC522/NiusRC522.h`  
+**Status:** Full implementation  
+**Protocol:** SPI (Mode 0, MSB first, max 10 MHz)
+
+---
+
+### Constructors
+
+#### Hardware SPI
+
+```cpp
+NiusRC522 rfid(csPin, rstPin);
+```
+
+Uses the board's default hardware SPI bus.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `csPin` | `uint8_t` | Chip-select (SS) pin |
+| `rstPin` | `uint8_t` | Reset pin |
+
+#### Software SPI
+
+```cpp
+NiusRC522 rfid(csPin, rstPin, sckPin, mosiPin, misoPin);
+```
+
+Bit-bangs SPI on any GPIO pins.  Required when the RC522 SCK is not on the board's
+hardware SCK pin (e.g. the reference wiring uses SCL/A5 as SCK).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `csPin` | `uint8_t` | Chip-select (RC522 SDA) |
+| `rstPin` | `uint8_t` | Reset (RC522 RST) |
+| `sckPin` | `uint8_t` | SPI clock (RC522 SCK) |
+| `mosiPin` | `uint8_t` | MOSI (RC522 MOSI) |
+| `misoPin` | `uint8_t` | MISO (RC522 MISO) |
+
+**Reference wiring example (Arduino UNO R4 WiFi):**
+
+```cpp
+// SDA→D18/A4  SCK→D19/A5  MOSI→D11  MISO→D12  IRQ→D13  RST→D10
+NiusRC522 rfid(SDA, 10, SCL, 11, 12);
+```
+
+---
+
+### `begin()` / `begin(spiSpeed)`
+
+```cpp
+bool begin()
+bool begin(uint32_t spiSpeed)
+```
+
+Initialise the RC522.  The optional `spiSpeed` (default 4 000 000 Hz) only affects
+hardware SPI mode; software SPI runs as fast as the MCU GPIO allows.
+
+**Returns:** `true` if the chip is detected.
+
+---
+
+### `cardPresent()`
+
+```cpp
+bool cardPresent()
+```
+
+Scan for a card using the ISO 14443A REQA command.  Only detects cards that are NOT
+in HALT state.  On success, populates `uid[]`, `uidLen`, and `lastCardType`.
+
+**Returns:** `true` if a card was found and selected.
+
+**Note:** Call `halt()` after processing so the card enters HALT state and is not
+re-read on the next call.
+
+---
+
+### `cardPresentWake()`
+
+```cpp
+bool cardPresentWake()
+```
+
+Like `cardPresent()` but uses WUPA, which also wakes cards in HALT state.
+
+---
+
+### `getUID()`
+
+```cpp
+String getUID()
+```
+
+Return the UID of the last detected card as an upper-case hex string.
+
+**Returns:** e.g. `"A1B2C3D4"` for a 4-byte UID, or `""` if no card was detected.
+
+---
+
+### `getUIDBytes()`
+
+```cpp
+bool getUIDBytes(uint8_t *buf, uint8_t &len)
+```
+
+Copy the raw UID bytes of the last detected card into `buf`.
+
+| Parameter | Description |
+|-----------|-------------|
+| `buf` | Output buffer, at least `NIUS_UID_MAX_LEN` (10) bytes |
+| `len` | Set to the number of valid UID bytes (4, 7, or 10) |
+
+**Returns:** `true` if a UID is available.
+
+---
+
+### `getCardType()` / `getCardTypeName()`
+
+```cpp
+uint8_t getCardType()
+String  getCardTypeName()
+```
+
+Return the card type of the last detected card.  `getCardType()` returns one of the
+`NIUS_CARD_*` constants.  `getCardTypeName()` returns a human-readable String.
+
+| Constant | Value | Name |
+|----------|-------|------|
+| `NIUS_CARD_UNKNOWN` | 0x00 | Unknown |
+| `NIUS_CARD_MIFARE_MINI` | 0x01 | MIFARE Mini |
+| `NIUS_CARD_MIFARE_1K` | 0x02 | MIFARE Classic 1K |
+| `NIUS_CARD_MIFARE_4K` | 0x03 | MIFARE Classic 4K |
+| `NIUS_CARD_MIFARE_UL` | 0x04 | MIFARE Ultralight |
+| `NIUS_CARD_MIFARE_PLUS` | 0x05 | MIFARE Plus |
+| `NIUS_CARD_ISO14443_4` | 0x06 | ISO 14443-4 |
+| `NIUS_CARD_ISO18092` | 0x07 | ISO 18092 (NFC-IP1) |
+
+---
+
+### `halt()`
+
+```cpp
+void halt()
+```
+
+Send the ISO 14443 HALT command to the active card, putting it in HALT state.
+Also clears the MFRC522 crypto1 engine.  Call this after finishing with a card.
+
+---
+
+### `authenticate()`
+
+```cpp
+uint8_t authenticate(uint8_t blockAddr, uint8_t keyType, uint8_t *key)
+```
+
+Perform MIFARE Classic authentication for the sector containing `blockAddr`.
+Must be called before `readBlock()` or `writeBlock()`.
+
+| Parameter | Description |
+|-----------|-------------|
+| `blockAddr` | Block number to authenticate (0–63 for 1K, 0–255 for 4K) |
+| `keyType` | `NIUS_KEY_A` (0x60) or `NIUS_KEY_B` (0x61) |
+| `key` | Pointer to a 6-byte key array |
+
+**Returns:** `NIUS_OK` on success, `NIUS_ERR_AUTH` on failure.
+
+**Default factory key:** `{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}`  
+A global constant `NIUS_KEY_DEFAULT[6]` is provided.
+
+---
+
+### `readBlock()`
+
+```cpp
+uint8_t readBlock(uint8_t blockAddr, uint8_t *data)
+```
+
+Read 16 bytes from a MIFARE Classic block.  The block's sector must be authenticated
+first with `authenticate()`.
+
+| Parameter | Description |
+|-----------|-------------|
+| `blockAddr` | Block number (must be authenticated) |
+| `data` | Output buffer, exactly 16 bytes |
+
+**Returns:** `NIUS_OK` on success.
+
+---
+
+### `writeBlock()`
+
+```cpp
+uint8_t writeBlock(uint8_t blockAddr, uint8_t *data)
+```
+
+Write 16 bytes to a MIFARE Classic block.  The block's sector must be authenticated
+first with `authenticate()`.
+
+| Parameter | Description |
+|-----------|-------------|
+| `blockAddr` | Block number (must be authenticated) |
+| `data` | Input buffer, exactly 16 bytes |
+
+**Returns:** `NIUS_OK` on success.
+
+> **WARNING:** Do NOT write to block 0 (manufacturer data — read-only).  
+> Do NOT write incorrect data to sector trailer blocks (3, 7, 11 … 63) as this can
+> permanently lock the sector.
+
+---
+
+### `stopCrypto()`
+
+```cpp
+void stopCrypto()
+```
+
+Disable the MFRC522 crypto1 engine after MIFARE operations.  Call this before the
+next `cardPresent()` scan, or the chip may refuse to communicate.
+
+---
+
+### `antennaOn()` / `antennaOff()`
+
+```cpp
+void antennaOn()
+void antennaOff()
+```
+
+Enable or disable the 13.56 MHz RF antenna.
+
+---
+
+### `setAntennaGain()` / `getAntennaGain()`
+
+```cpp
+void    setAntennaGain(uint8_t gain)
+uint8_t getAntennaGain()
+```
+
+Set or read the receiver gain.  Higher gain = longer read range but more noise.
+
+| Constant | dBm | Notes |
+|----------|-----|-------|
+| `NIUS_GAIN_18DB` | 18 | Minimum |
+| `NIUS_GAIN_23DB` | 23 | |
+| `NIUS_GAIN_33DB` | 33 | |
+| `NIUS_GAIN_38DB` | 38 | |
+| `NIUS_GAIN_43DB` | 43 | |
+| `NIUS_GAIN_48DB` | 48 | Maximum (default after `begin()`) |
+
+---
+
+### `setIRQPin()`
+
+```cpp
+void setIRQPin(uint8_t irqPin)
+```
+
+Configure the GPIO pin connected to the RC522 IRQ output (active LOW).
+After calling this, attach an interrupt on the same pin in your sketch:
+
+```cpp
+rfid.setIRQPin(13);
+attachInterrupt(digitalPinToInterrupt(13), myISR, FALLING);
+```
+
+---
+
+### Raw Register Access
+
+```cpp
+uint8_t readRegister(uint8_t addr)
+void    writeRegister(uint8_t addr, uint8_t value)
+void    setRegisterBits(uint8_t addr, uint8_t mask)
+void    clearRegisterBits(uint8_t addr, uint8_t mask)
+```
+
+Direct access to MFRC522 registers.  Register addresses are defined in
+`NiusMFRC522_Reg.h` (e.g. `MFRC522_REG_VERSION` = 0x37).  Use these for features
+not covered by the high-level API.
+
+---
+
+### Public Fields
+
+```cpp
+uint8_t uid[NIUS_UID_MAX_LEN];  // Raw UID bytes (populated by cardPresent)
+uint8_t uidLen;                 // Number of valid UID bytes (4, 7, or 10)
+uint8_t lastCardType;           // NIUS_CARD_* of the last card
+```
+
+---
+
+## NiusNRF24L01 — NRF24L01+ 2.4 GHz Radio
+
+**Status:** Stub — full implementation in a future release.
+
+### Constructors
+
+```cpp
+NiusNRF24L01 radio(cePin, csnPin);                          // Hardware SPI
+NiusNRF24L01 radio(cePin, csnPin, sckPin, mosiPin, misoPin); // Software SPI
+```
+
+### Key Methods
+
+| Method | Description |
+|--------|-------------|
+| `begin()` | Initialise the NRF24L01 |
+| `setChannel(channel)` | Set RF channel 0–125 (2400+ch MHz) |
+| `setDataRate(rate)` | `NIUS_NRF24_250KBPS` / `_1MBPS` / `_2MBPS` |
+| `setPower(level)` | `NIUS_NRF24_PWR_MIN` … `NIUS_NRF24_PWR_MAX` |
+| `openWritingPipe(addr)` | Set TX destination address (5 bytes) |
+| `openReadingPipe(pipe, addr)` | Open RX pipe 0–5 |
+| `startListening()` | Enter RX mode |
+| `stopListening()` | Enter standby/TX mode |
+| `available()` | Check if payload is waiting |
+| `readRadio(buf, len)` | Read payload from RX FIFO |
+| `writeRadio(buf, len)` | Transmit a payload |
+
+---
+
+## NiusHC12 — HC-12 Long-Range Serial
+
+**Status:** Stub — full implementation in a future release.
+
+### Constructor
+
+```cpp
+NiusHC12 hc12(serial, setPin, baudRate);
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `serial` | `HardwareSerial` reference (e.g. `Serial1`) |
+| `setPin` | GPIO connected to HC-12 SET (AT mode control) |
+| `baudRate` | UART baud rate (default 9600) |
+
+### Key Methods
+
+| Method | Description |
+|--------|-------------|
+| `send(data)` | Send a String over the air |
+| `receive()` | Read received String |
+| `available()` | Bytes waiting to read |
+| `setChannel(ch)` | Channel 1–100 (433.4 + (ch-1)×0.4 MHz) |
+| `setPower(level)` | Power 1–8 (−1 dBm to 20 dBm) |
+| `setBaud(baud)` | Change UART baud (requires re-init) |
+| `setMode(mode)` | `NIUS_HC12_FU1` … `NIUS_HC12_FU4` |
+| `enterATMode()` | Pull SET LOW, enter AT command mode |
+| `exitATMode()` | Release SET, return to transparent mode |
+| `sendAT(cmd)` | Send raw AT command string |
+| `readResponse(ms)` | Read AT response within timeout |
+
+---
+
+## NiusHC06 — HC-06 / HC-05 Bluetooth SPP
+
+**Status:** Stub — full implementation in a future release.
+
+### Constructor
+
+```cpp
+NiusHC06 bt(serial, baudRate);
+```
+
+### Key Methods
+
+| Method | Description |
+|--------|-------------|
+| `send(data)` | Send String over Bluetooth |
+| `receive()` | Read incoming String |
+| `available()` | Bytes available to read |
+| `setName(name)` | Set BT device name (AT command) |
+| `setBaud(baud)` | Change UART baud (AT command) |
+| `setPIN(pin)` | Set 4-digit pairing PIN |
+| `getName()` | Query device name |
+| `getAddress()` | Query BT MAC address |
+| `isConnected()` | Check connection state (needs STATE pin) |
+| `sendAT(cmd)` | Send raw AT command |
+| `readResponse(ms)` | Read AT response |
+
+---
+
+## NiusPN532 — PN532 NFC/RFID
+
+**Status:** Stub — full implementation in a future release.
+
+### Constructors
+
+```cpp
+NiusPN532 nfc(irqPin, rstPin);          // I2C mode (default)
+NiusPN532 nfc(csPin, rstPin, true);     // SPI mode
+```
+
+### Key Methods
+
+| Method | Description |
+|--------|-------------|
+| `cardPresent()` | Detect ISO 14443A card |
+| `getUID()` | UID as hex String |
+| `getUIDBytes(buf, len)` | UID as byte array |
+| `authenticate(block, keyType, key)` | MIFARE Classic auth |
+| `readBlock(block, data)` | Read 16-byte block |
+| `writeBlock(block, data)` | Write 16-byte block |
+| `readNDEF(buf, len)` | Read NDEF from Type 2 tag |
+| `writeNDEF(buf, len)` | Write NDEF to Type 2 tag |
+
+---
+
+## Return Codes
+
+All MIFARE operations return one of these `uint8_t` codes:
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `NIUS_OK` | 0x00 | Success |
+| `NIUS_ERR_NOTAG` | 0x01 | No card in range |
+| `NIUS_ERR_TIMEOUT` | 0x02 | Operation timed out |
+| `NIUS_ERR_CRC` | 0x03 | CRC mismatch |
+| `NIUS_ERR_COLLISION` | 0x04 | Bit collision |
+| `NIUS_ERR_AUTH` | 0x05 | Authentication failed |
+| `NIUS_ERR_OVERFLOW` | 0x06 | Buffer overflow |
+| `NIUS_ERR_PARAM` | 0x07 | Bad parameter |
+| `NIUS_ERR_UNKNOWN` | 0xFF | Unclassified error |
+
+---
+
+## Card Type Constants
+
+Returned by `NiusRC522::getCardType()` and `NiusPN532::getCardType()`:
+
+| Constant | Description |
+|----------|-------------|
+| `NIUS_CARD_UNKNOWN` | Unidentified card |
+| `NIUS_CARD_MIFARE_MINI` | MIFARE Mini (320 B, 5 sectors) |
+| `NIUS_CARD_MIFARE_1K` | MIFARE Classic 1K — **S50 Fudan card** |
+| `NIUS_CARD_MIFARE_4K` | MIFARE Classic 4K |
+| `NIUS_CARD_MIFARE_UL` | MIFARE Ultralight |
+| `NIUS_CARD_MIFARE_PLUS` | MIFARE Plus |
+| `NIUS_CARD_ISO14443_4` | ISO 14443-4 (smart card) |
+| `NIUS_CARD_ISO18092` | ISO 18092 / NFC-IP1 |
+| `NIUS_CARD_TNP3XXX` | NXP TNP3xxx |
+| `NIUS_CARD_DESFIRE` | MIFARE DESFire |
+
+---
+
+## Wiring Quick-Reference
+
+### RC522 — Arduino UNO R4 WiFi (software SPI)
+
+| RC522 Pin | Arduino Pin | Notes |
+|-----------|-------------|-------|
+| SDA (CS) | SDA / D18 / A4 | Chip-select |
+| SCK | SCL / D19 / A5 | Software SPI clock |
+| MOSI | D11 | |
+| MISO | D12 | |
+| IRQ | D13 | Optional interrupt |
+| RST | D10 | Reset |
+| 3.3V | 3.3V | Do NOT use 5V |
+| GND | GND | |
+
+### RC522 — Standard hardware SPI wiring (any UNO-compatible board)
+
+| RC522 Pin | Arduino Pin |
+|-----------|-------------|
+| SDA (CS) | D10 |
+| SCK | D13 |
+| MOSI | D11 |
+| MISO | D12 |
+| RST | D9 |
+| 3.3V | 3.3V |
+| GND | GND |
+
+```cpp
+// Standard hardware SPI constructor
+NiusRC522 rfid(10, 9);
+```
+
+### NRF24L01 — Typical wiring
+
+| NRF24 Pin | Arduino Pin |
+|-----------|-------------|
+| CE | D9 |
+| CSN | D10 |
+| SCK | D13 |
+| MOSI | D11 |
+| MISO | D12 |
+| VCC | 3.3V |
+| GND | GND |
+
+> **Important:** The NRF24L01 is a 3.3 V device.  Never connect VCC to 5 V.
+> On 5 V boards, add a 10 µF capacitor between VCC and GND close to the module.
