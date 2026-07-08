@@ -162,9 +162,8 @@ String NiusRC522::getVersion() {
  * ====================================================================== */
 
 bool NiusRC522::cardPresent() {
-    uint8_t atqa[2];
     lastSelectError = 0xFF;
-    uint8_t r = requestA(atqa);
+    uint8_t r = requestA(this->atqa);
     if (r != NIUS_OK) { lastError = r; return false; }
     uint8_t outUID[NIUS_UID_MAX_LEN];
     uint8_t outLen = 0;
@@ -174,15 +173,15 @@ bool NiusRC522::cardPresent() {
     if (r != NIUS_OK) { lastError = r; return false; }
     memcpy(uid, outUID, outLen);
     uidLen = outLen;
+    sak = outSAK;
     lastCardType = sakToCardType(outSAK);
     lastError = NIUS_OK;
     return true;
 }
 
 bool NiusRC522::cardPresentWake() {
-    uint8_t atqa[2];
     lastSelectError = 0xFF;
-    uint8_t r = wakeupA(atqa);
+    uint8_t r = wakeupA(this->atqa);
     if (r != NIUS_OK) { lastError = r; return false; }
     uint8_t outUID[NIUS_UID_MAX_LEN];
     uint8_t outLen = 0;
@@ -192,6 +191,7 @@ bool NiusRC522::cardPresentWake() {
     if (r != NIUS_OK) { lastError = r; return false; }
     memcpy(uid, outUID, outLen);
     uidLen = outLen;
+    sak = outSAK;
     lastCardType = sakToCardType(outSAK);
     lastError = NIUS_OK;
     return true;
@@ -232,6 +232,27 @@ String NiusRC522::getCardTypeName() {
         case NIUS_CARD_DESFIRE:      return "MIFARE DESFire";
         default:                      return "Unknown";
     }
+}
+
+String NiusRC522::getATQA() {
+    if (lastError != NIUS_OK) { return ""; }
+    String s = "";
+    for (uint8_t i = 0; i < 2; i++) {
+        if (atqa[i] < 0x10) { s += '0'; }
+        s += String(atqa[i], HEX);
+    }
+    s.toUpperCase();
+    return s;
+}
+
+bool NiusRC522::getATQABytes(uint8_t *buf) {
+    if (lastError != NIUS_OK) { return false; }
+    memcpy(buf, atqa, 2);
+    return true;
+}
+
+uint8_t NiusRC522::getSAK() {
+    return sak;
 }
 
 void NiusRC522::halt() {
@@ -286,7 +307,11 @@ uint8_t NiusRC522::readBlock(uint8_t blockAddr, uint8_t *data) {
     res = executeCommand(MFRC522_CMD_TRANSCEIVE, 0x30,
                          cmd, 4, backData, &backLen, nullptr, 0, true);
     if (res != NIUS_OK) { return res; }
-    if (backLen != 16) { return NIUS_ERR_UNKNOWN; }
+    // MIFARE Classic READ returns 16 data bytes followed by 2 CRC bytes.
+    // executeCommand() verifies the CRC and returns OK with backLen == 18
+    // for a valid response. Accept 16 (CRC stripped) or 18 (with CRC) and
+    // copy the first 16 bytes — the 2 trailing bytes, if present, are CRC.
+    if (backLen < 16) { return NIUS_ERR_UNKNOWN; }
     memcpy(data, backData, 16);
     return NIUS_OK;
 }
@@ -331,6 +356,57 @@ uint8_t NiusRC522::writeBlock(uint8_t blockAddr, uint8_t *data) {
 
 void NiusRC522::stopCrypto() {
     clearRegisterBits(MFRC522_REG_STATUS2, 0x08);  // Clear MFCrypto1On
+}
+
+/* =======================================================================
+ * MIFARE Ultralight / NTAG operations
+ * No authentication. Page-addressed. READ returns 4 pages (16 bytes)
+ * at a time, WRITE writes a single 4-byte page.
+ * ====================================================================== */
+
+uint8_t NiusRC522::readPage(uint8_t page, uint8_t *data) {
+    uint8_t cmd[4];
+    cmd[0] = MIFARE_CMD_READ;        // 0x30 (same code as Classic)
+    cmd[1] = page;
+    uint8_t crc[2];
+    uint8_t res = calcCRC(cmd, 2, crc);
+    if (res != NIUS_OK) { return res; }
+    cmd[2] = crc[0];
+    cmd[3] = crc[1];
+
+    uint8_t backData[18];
+    uint8_t backLen = sizeof(backData);
+    res = executeCommand(MFRC522_CMD_TRANSCEIVE, 0x30,
+                         cmd, 4, backData, &backLen, nullptr, 0, true);
+    if (res != NIUS_OK) { return res; }
+    // Ultralight/NTAG READ returns 4 pages (16 bytes) + 2 CRC bytes.
+    if (backLen < 16) { return NIUS_ERR_UNKNOWN; }
+    memcpy(data, backData, 16);
+    return NIUS_OK;
+}
+
+uint8_t NiusRC522::writePage(uint8_t page, uint8_t *data) {
+    // Ultralight WRITE: 0xA2 + page + 4 data bytes + 2 CRC bytes
+    uint8_t cmd[8];
+    cmd[0] = MIFARE_CMD_WRITE_UL;    // 0xA2
+    cmd[1] = page;
+    memcpy(&cmd[2], data, 4);
+    uint8_t crc[2];
+    uint8_t res = calcCRC(cmd, 6, crc);
+    if (res != NIUS_OK) { return res; }
+    cmd[6] = crc[0];
+    cmd[7] = crc[1];
+
+    // The card responds with a 4-bit ACK (0xA) on success or NAK.
+    uint8_t ack[1];
+    uint8_t ackLen = 1;
+    uint8_t validBits = 0;
+    res = executeCommand(MFRC522_CMD_TRANSCEIVE, 0x30,
+                         cmd, 8, ack, &ackLen, &validBits, 0, false);
+    if (res != NIUS_OK) { return res; }
+    if (ackLen != 1 || validBits != 4) { return NIUS_ERR_UNKNOWN; }
+    if ((ack[0] & 0x0F) != MIFARE_ACK) { return NIUS_ERR_AUTH; }
+    return NIUS_OK;
 }
 
 /* =======================================================================

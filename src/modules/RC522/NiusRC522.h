@@ -200,6 +200,25 @@ public:
     String getCardTypeName();
 
     /**
+     * getATQA() — Return the ATQA bytes from the last cardPresent() call
+     * as a hex String. Example: "0400" for a MIFARE Classic 1K.
+     * Returns an empty String if no card has been detected.
+     */
+    String getATQA();
+
+    /**
+     * getATQABytes() — Copy the two ATQA bytes from the last cardPresent()
+     * call into buf. Returns true if a card has been detected.
+     */
+    bool getATQABytes(uint8_t *buf);
+
+    /**
+     * getSAK() — Return the SAK (Select Acknowledge) byte from the last
+     * cardPresent() call. Returns 0 if no card has been detected.
+     */
+    uint8_t getSAK();
+
+    /**
      * halt() — Send the ISO 14443 HALT command to the active card.
      * Call this after you have finished processing a card.
      * The card will not respond to REQA until it leaves the field.
@@ -258,6 +277,38 @@ public:
     void stopCrypto();
 
     /* -------------------------------------------------------------------
+     * MIFARE Ultralight / NTAG operations
+     * No authentication required. Pages are 4 bytes, addressed by page
+     * number. READ returns 4 consecutive pages (16 bytes) at a time.
+     * Suitable for MIFARE Ultralight, Ultralight C, Ultralight EV1,
+     * NTAG213/215/216, and "magic" CUID cards in their post-write mode.
+     * ------------------------------------------------------------------ */
+
+    /**
+     * readPage() — Read 4 consecutive pages (16 bytes) starting at `page`
+     * from a MIFARE Ultralight / NTAG tag. No authentication required.
+     *
+     * page — page number (0 for first page)
+     * data — pointer to a 16-byte buffer that receives the data
+     *
+     * Returns NIUS_OK on success.
+     */
+    uint8_t readPage(uint8_t page, uint8_t *data);
+
+    /**
+     * writePage() — Write 4 bytes to a single page on a MIFARE Ultralight /
+     * NTAG tag. No authentication required. The card must NOT be
+     * password-protected, or you must have authenticated with the PWD_AUTH
+     * command first.
+     *
+     * page — page number
+     * data — pointer to a 4-byte buffer
+     *
+     * Returns NIUS_OK on success, NIUS_ERR_AUTH on NAK.
+     */
+    uint8_t writePage(uint8_t page, uint8_t *data);
+
+    /* -------------------------------------------------------------------
      * RF antenna control
      * ------------------------------------------------------------------ */
 
@@ -313,6 +364,8 @@ public:
 
     uint8_t uid[NIUS_UID_MAX_LEN]; // Raw UID bytes of the last detected card
     uint8_t uidLen;                // Number of valid bytes in uid[]
+    uint8_t atqa[2];               // ATQA bytes from the last REQA/WUPA
+    uint8_t sak;                   // SAK byte from the last SELECT (with bit2 masked off)
     uint8_t lastCardType;          // NIUS_CARD_* of the last detected card
     uint8_t lastError;             // Error code from the last cardPresent call
     uint8_t lastSelectError;       // Error from selectCard() — 0 if not reached

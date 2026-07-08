@@ -57,6 +57,7 @@ usage notes.
 | `rc522_basic` | RC522 | Detect card UID and type |
 | `rc522_adv` | RC522 | IRQ, raw register access, gain control |
 | `rc522_s50` | RC522 | Read and write MIFARE Classic 1K blocks |
+| `rc522_tag` | RC522 | Full keychain tag operations: dump, write, value block, key change |
 | `rfm95_basic` | RFM95W | Send/receive LoRa packets |
 | `rfm95_adv` | RFM95W | CAD, interrupt RX, full config |
 | `sx1262_basic` | SX1262 | Send/receive with SX1262/SX1268 |

@@ -38,12 +38,17 @@ getUID	KEYWORD2
 getUIDBytes	KEYWORD2
 getCardType	KEYWORD2
 getCardTypeName	KEYWORD2
+getATQA	KEYWORD2
+getATQABytes	KEYWORD2
+getSAK	KEYWORD2
 halt	KEYWORD2
 stopCrypto	KEYWORD2
 
 authenticate	KEYWORD2
 readBlock	KEYWORD2
 writeBlock	KEYWORD2
+readPage	KEYWORD2
+writePage	KEYWORD2
 
 antennaOn	KEYWORD2
 antennaOff	KEYWORD2
