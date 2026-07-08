@@ -114,6 +114,7 @@
 #define MIFARE_CMD_WRITE_UL        0xA2  // WRITE — 4 bytes to a single page
 #define MIFARE_CMD_COMP_WRITE      0xA0  // Compatibility Write (NTAG)
 #define MIFARE_CMD_AUTH_UL         0x1A  // PWD_AUTH — NTAG password auth
+#define MIFARE_CMD_GET_VERSION     0x60  // GET_VERSION — NTAG / Ultralight EV1 version info
 
 /* MIFARE ACK / NAK */
 #define MIFARE_ACK                 0x0A

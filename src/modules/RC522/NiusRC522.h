@@ -219,6 +219,24 @@ public:
     uint8_t getSAK();
 
     /**
+     * getNTAGVersion() — Send GET_VERSION (0x60) to a MIFARE Ultralight
+     * or NTAG tag and copy the 8-byte version response into `version`.
+     * Returns NIUS_OK on success, NIUS_ERR_TIMEOUT / NIUS_ERR_UNKNOWN
+     * if the tag is not Ultralight-family or does not respond.
+     *
+     * The response bytes are:
+     *   [0] fixed header (0x00)
+     *   [1] vendor ID  (0x04 for NXP)
+     *   [2] product type (0x03 = Ultralight, 0x04 = NTAG)
+     *   [3] product subtype
+     *   [4] major version
+     *   [5] minor version
+     *   [6] storage size
+     *   [7] protocol type
+     */
+    uint8_t getNTAGVersion(uint8_t *version);
+
+    /**
      * halt() — Send the ISO 14443 HALT command to the active card.
      * Call this after you have finished processing a card.
      * The card will not respond to REQA until it leaves the field.

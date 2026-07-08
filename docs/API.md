@@ -236,10 +236,68 @@ Return the card type of the last detected card.  `getCardType()` returns one of 
 | `NIUS_CARD_MIFARE_MINI` | 0x01 | MIFARE Mini |
 | `NIUS_CARD_MIFARE_1K` | 0x02 | MIFARE Classic 1K |
 | `NIUS_CARD_MIFARE_4K` | 0x03 | MIFARE Classic 4K |
-| `NIUS_CARD_MIFARE_UL` | 0x04 | MIFARE Ultralight |
+| `NIUS_CARD_MIFARE_UL` | 0x04 | MIFARE Ultralight (incl. NTAG) |
 | `NIUS_CARD_MIFARE_PLUS` | 0x05 | MIFARE Plus |
-| `NIUS_CARD_ISO14443_4` | 0x06 | ISO 14443-4 |
+| `NIUS_CARD_ISO14443_4` | 0x06 | ISO 14443-4 (DESFire etc.) |
 | `NIUS_CARD_ISO18092` | 0x07 | ISO 18092 (NFC-IP1) |
+
+To distinguish NTAG from generic MIFARE Ultralight, call `getNTAGVersion()`
+— NTAG and Ultralight share the same ATQA/SAK (`0x4400` / `0x00`) but the
+`GET_VERSION (0x60)` response carries the product type / subtype.
+
+---
+
+### `getATQA()` / `getATQABytes()` / `getSAK()`
+
+```cpp
+String  getATQA()
+bool    getATQABytes(uint8_t *buf)
+uint8_t getSAK()
+```
+
+Return the ATQA (2 bytes) and SAK (1 byte) captured during the last
+`cardPresent()` / `cardPresentWake()` call.  These identify the card
+family at the protocol level, even before any application-level auth.
+
+`getATQA()` formats the bytes as a 4-hex-digit String (e.g. `"0400"` for
+MIFARE Classic 1K, `"4400"` for Ultralight / NTAG). `getATQABytes()`
+copies the two raw bytes into `buf` in the order returned by the card
+(ATQA[0] = MSB, ATQA[1] = LSB).  `getSAK()` returns the raw SAK byte,
+with the CRC bits (`0x80` / `0x20`) still set.
+
+```cpp
+if (rfid.cardPresent()) {
+    uint8_t atqa[2], sak = rfid.getSAK();
+    rfid.getATQABytes(atqa);
+    // atqa[0..1] = ATQA, sak = SAK
+}
+```
+
+---
+
+### `getNTAGVersion()`
+
+```cpp
+uint8_t getNTAGVersion(uint8_t *version)
+```
+
+Send `GET_VERSION (0x60)` to the tag and copy the 8-byte version response
+into `version`.  Returns `NIUS_OK` on success.
+
+| Byte | Meaning | Example (NTAG215) |
+|------|---------|-------------------|
+| 0 | Fixed header | `0x00` |
+| 1 | Vendor ID | `0x04` = NXP |
+| 2 | Product type | `0x04` = NTAG, `0x03` = MIFARE Ultralight |
+| 3 | Product subtype | `0x11` = NTAG215, `0x01` = Ultralight EV1 |
+| 4 | Major version | `0x01` |
+| 5 | Minor version | `0x00` |
+| 6 | Storage size | `0x12` = 504 bytes (NTAG215) |
+| 7 | Protocol type | `0x03` = ISO 14443-3 |
+
+This is the only way to tell apart NTAG213/215/216, MIFARE Ultralight,
+and MIFARE Ultralight EV1 from each other — they all share the same
+ATQA (`0x4400`) and SAK (`0x00`).
 
 ---
 
@@ -327,6 +385,35 @@ next `cardPresent()` scan, or the chip may refuse to communicate.
 
 ---
 
+### `readPage()` / `writePage()`
+
+```cpp
+uint8_t readPage(uint8_t page, uint8_t *data)   // 4 pages (16 bytes)
+uint8_t writePage(uint8_t page, uint8_t *data)  // 4 bytes to one page
+```
+
+Read / write on a **MIFARE Ultralight / NTAG** tag.  No authentication is
+required (the Ultralight family is page-addressed, not sectored).  The
+card must be present in the field and have been brought out of HALT
+state with `cardPresentWake()`.
+
+| Parameter | Meaning |
+|-----------|---------|
+| `page`    | page number (page 0 holds the first 4 UID bytes) |
+| `data`    | for `readPage`: 16-byte receive buffer (4 pages); for `writePage`: 4-byte payload |
+
+`readPage()` reads 4 consecutive pages (16 bytes) at a time, matching
+the MIFARE Ultralight / NTAG spec — page 0 returns pages 0-3, page 4
+returns pages 4-7, etc.  It stops on the first NAK (out of memory).
+
+`writePage()` writes a single 4-byte page and returns `NIUS_OK` on the
+4-bit ACK (`0xA`) or `NIUS_ERR_AUTH` on NAK.
+
+These methods do **not** work on MIFARE Classic cards (which need the
+`readBlock` / `writeBlock` flow with Key A or Key B authentication).
+
+---
+
 ### `antennaOn()` / `antennaOff()`
 
 ```cpp
@@ -394,8 +481,16 @@ not covered by the high-level API.
 ```cpp
 uint8_t uid[NIUS_UID_MAX_LEN];  // Raw UID bytes (populated by cardPresent)
 uint8_t uidLen;                 // Number of valid UID bytes (4, 7, or 10)
+uint8_t atqa[2];                // ATQA bytes from the last REQA/WUPA
+uint8_t sak;                    // SAK byte from the last SELECT
 uint8_t lastCardType;           // NIUS_CARD_* of the last card
+uint8_t lastError;              // Error code from the last cardPresent call
+uint8_t lastSelectError;        // Error from selectCard() — 0 if not reached
 ```
+
+`atqa[]` and `sak` are populated every time `cardPresent()` /
+`cardPresentWake()` succeeds. Use the `getATQA()`, `getATQABytes()`, and
+`getSAK()` accessors if you prefer the String / typed API.
 
 ---
 

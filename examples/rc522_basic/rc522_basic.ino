@@ -1,9 +1,12 @@
 /*
- * rc522_basic — Simplest RC522 card reader example
+ * rc522_basic — RC522 type explorer
  *
  * Scans for RFID cards and prints the UID, ATQA, SAK and detected card
- * type to Serial Monitor. Also recommends which example to run for the
- * detected card family.
+ * type to Serial Monitor. For Ultralight / NTAG tags it also sends
+ * GET_VERSION (0x60) to read the tag's product / vendor bytes and
+ * identifies the specific chip (NTAG213/215/216, Ultralight EV1, etc.).
+ *
+ * Also recommends which example to run for the detected card family.
  *
  * --- Wiring (Arduino UNO R4 WiFi) ---
  *   RC522 SDA  -> SDA  (D18 / A4)   chip-select, software SPI
@@ -76,6 +79,49 @@ void loop() {
         Serial.println(rfid.getSAK(), HEX);
         Serial.print(F("  Type:  ")); Serial.println(rfid.getCardTypeName());
 
+        // For Ultralight / NTAG, ask the tag for its GET_VERSION (0x60)
+        // response to distinguish the actual product (NTAG213/215/216,
+        // Ultralight, Ultralight EV1, etc.) — ATQA+SAK alone can't.
+        if (rfid.getCardType() == NIUS_CARD_MIFARE_UL) {
+            uint8_t v[8];
+            if (rfid.getNTAGVersion(v) == NIUS_OK) {
+                Serial.print(F("  Tag:   "));
+                // vendor: 0x04 = NXP; product: 0x03 = Ultralight, 0x04 = NTAG
+                if (v[1] == 0x04) {
+                    if (v[2] == 0x04) {
+                        Serial.print(F("NXP NTAG"));
+                        if (v[3] == 0x02) Serial.print(F("213"));
+                        else if (v[3] == 0x11) Serial.print(F("215"));
+                        else if (v[3] == 0x13) Serial.print(F("216"));
+                        else                              Serial.print(F(" (subtype 0x"));
+                        if (v[3] >= 0x10) {
+                            Serial.print(v[3], HEX); Serial.print(')');
+                        } else {
+                            Serial.print(F("2"));
+                            Serial.print(v[3], HEX);
+                        }
+                    } else if (v[2] == 0x03) {
+                        Serial.print(F("NXP MIFARE Ultralight"));
+                        if (v[3] == 0x01) Serial.print(F(" EV1"));
+                        if (v[3] == 0x02) Serial.print(F(" C"));
+                    } else {
+                        Serial.print(F("NXP product 0x"));
+                        Serial.print(v[2], HEX);
+                    }
+                    Serial.print(F(" v"));
+                    Serial.print(v[4], DEC);
+                    Serial.print('.');
+                    Serial.print(v[5], DEC);
+                } else {
+                    Serial.print(F("vendor 0x"));
+                    Serial.print(v[1], HEX);
+                }
+                Serial.println();
+            } else {
+                Serial.println(F("  Tag:   GET_VERSION did not respond (tag may be broken)."));
+            }
+        }
+
         // Recommend which example actually operates this kind of tag.
         Serial.println();
         switch (rfid.getCardType()) {
@@ -83,11 +129,13 @@ void loop() {
             case NIUS_CARD_MIFARE_4K:
             case NIUS_CARD_MIFARE_MINI:
                 Serial.println(F("  -> Run rc522_s50 or rc522_tag for full block read/write."));
+                Serial.println(F("  -> If this is a Chinese magic card (CUID / Gen2 / Gen1a / Gen3),"));
+                Serial.println(F("     rc522_tag step 0 will rewrite block 0 / change the UID."));
                 break;
             case NIUS_CARD_MIFARE_UL:
                 Serial.println(F("  -> MIFARE Ultralight / NTAG detected."));
-                Serial.println(F("     Use rc522_tag (it has Ultralight page read/write)"));
-                Serial.println(F("     or an Android app like Mifare Classic Tool / TagInfo."));
+                Serial.println(F("     rc522_tag (it has Ultralight page read/write), or an Android"));
+                Serial.println(F("     app like Mifare Classic Tool / TagInfo / NFC Tools."));
                 break;
             case NIUS_CARD_ISO14443_4:
             case NIUS_CARD_DESFIRE:
@@ -100,8 +148,8 @@ void loop() {
                 break;
             case NIUS_CARD_MIFARE_PLUS:
                 Serial.println(F("  -> MIFARE Plus card."));
-                Serial.println(F("     Classic emulation layer may work; SL3 needs AES — not"));
-                Serial.println(F("     implemented in NiusWireless."));
+                Serial.println(F("     Classic emulation layer (SL1) may work; SL2/SL3 needs"));
+                Serial.println(F("     AES — not implemented in NiusWireless."));
                 break;
             case NIUS_CARD_TNP3XXX:
             case NIUS_CARD_UNKNOWN:

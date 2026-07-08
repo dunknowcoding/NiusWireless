@@ -255,6 +255,27 @@ uint8_t NiusRC522::getSAK() {
     return sak;
 }
 
+uint8_t NiusRC522::getNTAGVersion(uint8_t *version) {
+    // GET_VERSION (0x60) for NTAG / MIFARE Ultralight EV1.
+    // Command: 0x60 + 2 CRC bytes. Response: 8 version bytes + 2 CRC.
+    uint8_t cmd[3];
+    cmd[0] = 0x60;
+    uint8_t crc[2];
+    uint8_t res = calcCRC(cmd, 1, crc);
+    if (res != NIUS_OK) { return res; }
+    cmd[1] = crc[0];
+    cmd[2] = crc[1];
+
+    uint8_t backData[10];
+    uint8_t backLen = sizeof(backData);
+    res = executeCommand(MFRC522_CMD_TRANSCEIVE, 0x30,
+                         cmd, 3, backData, &backLen, nullptr, 0, true);
+    if (res != NIUS_OK) { return res; }
+    if (backLen < 8) { return NIUS_ERR_UNKNOWN; }
+    memcpy(version, backData, 8);
+    return NIUS_OK;
+}
+
 void NiusRC522::halt() {
     uint8_t buf[4];
     buf[0] = MIFARE_CMD_HALT_MSB;
