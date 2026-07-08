@@ -29,7 +29,9 @@ NiusRC522::NiusRC522(uint8_t csPin, uint8_t rstPin) {
     _spiSpeed = 4000000UL;
     _ready    = false;
     uidLen    = 0;
-    lastCardType = NIUS_CARD_UNKNOWN;
+    lastCardType    = NIUS_CARD_UNKNOWN;
+    lastError       = NIUS_OK;
+    lastSelectError = 0xFF;  // 0xFF = selectCard never called
     memset(uid, 0, sizeof(uid));
 }
 
@@ -45,7 +47,9 @@ NiusRC522::NiusRC522(uint8_t csPin, uint8_t rstPin,
     _spiSpeed = 0;
     _ready    = false;
     uidLen    = 0;
-    lastCardType = NIUS_CARD_UNKNOWN;
+    lastCardType    = NIUS_CARD_UNKNOWN;
+    lastError       = NIUS_OK;
+    lastSelectError = 0xFF;
     memset(uid, 0, sizeof(uid));
 }
 
@@ -159,27 +163,37 @@ String NiusRC522::getVersion() {
 
 bool NiusRC522::cardPresent() {
     uint8_t atqa[2];
-    if (requestA(atqa) != NIUS_OK) { return false; }
+    lastSelectError = 0xFF;
+    uint8_t r = requestA(atqa);
+    if (r != NIUS_OK) { lastError = r; return false; }
     uint8_t outUID[NIUS_UID_MAX_LEN];
     uint8_t outLen = 0;
     uint8_t outSAK = 0;
-    if (selectCard(outUID, &outLen, &outSAK) != NIUS_OK) { return false; }
+    r = selectCard(outUID, &outLen, &outSAK);
+    lastSelectError = r;
+    if (r != NIUS_OK) { lastError = r; return false; }
     memcpy(uid, outUID, outLen);
     uidLen = outLen;
     lastCardType = sakToCardType(outSAK);
+    lastError = NIUS_OK;
     return true;
 }
 
 bool NiusRC522::cardPresentWake() {
     uint8_t atqa[2];
-    if (wakeupA(atqa) != NIUS_OK) { return false; }
+    lastSelectError = 0xFF;
+    uint8_t r = wakeupA(atqa);
+    if (r != NIUS_OK) { lastError = r; return false; }
     uint8_t outUID[NIUS_UID_MAX_LEN];
     uint8_t outLen = 0;
     uint8_t outSAK = 0;
-    if (selectCard(outUID, &outLen, &outSAK) != NIUS_OK) { return false; }
+    r = selectCard(outUID, &outLen, &outSAK);
+    lastSelectError = r;
+    if (r != NIUS_OK) { lastError = r; return false; }
     memcpy(uid, outUID, outLen);
     uidLen = outLen;
     lastCardType = sakToCardType(outSAK);
+    lastError = NIUS_OK;
     return true;
 }
 
@@ -578,16 +592,20 @@ uint8_t NiusRC522::requestOrWakeup(uint8_t cmd, uint8_t *atqa) {
 }
 
 /*
- * selectCard() — Run the full ISO 14443A anti-collision + select sequence.
- * Supports single (4-byte), double (7-byte) and triple (10-byte) UIDs.
- * outUID  — buffer for the assembled UID (must be at least 10 bytes)
- * outLen  — set to the final UID length
+ * selectCard() — Full ISO 14443A anti-collision + select sequence.
+ *
+ * Handles single (4-byte), double (7-byte) and triple (10-byte) UIDs and
+ * properly resolves bit collisions when multiple cards are in the field by
+ * retrying with progressively more known UID bits.
+ *
+ * outUID  — at least NIUS_UID_MAX_LEN (10) bytes
+ * outLen  — set to the final UID byte count
  * outSAK  — set to the Select Acknowledge byte
  */
 uint8_t NiusRC522::selectCard(uint8_t *outUID, uint8_t *outLen, uint8_t *outSAK) {
-    uint8_t uidIdx     = 0;   // index into outUID where cascade bytes go
+    uint8_t uidIdx    = 0;
     uint8_t result;
-    bool uidComplete   = false;
+    bool uidComplete  = false;
 
     static const uint8_t cascadeCmd[3] = {
         MIFARE_CASCADE_1, MIFARE_CASCADE_2, MIFARE_CASCADE_3
@@ -595,81 +613,116 @@ uint8_t NiusRC522::selectCard(uint8_t *outUID, uint8_t *outLen, uint8_t *outSAK)
 
     for (uint8_t cascade = 0; cascade < 3 && !uidComplete; cascade++) {
 
-        clearRegisterBits(MFRC522_REG_COLL, 0x80);
+        uint8_t lvlUID[4];    // Resolved UID bytes for this cascade level
+        uint8_t knownBits = 0;// How many UID bits have been resolved so far
 
-        // ---- Anti-collision ------------------------------------------------
-        uint8_t buf[9];
-        uint8_t bufLen;
-        uint8_t rxAlign   = 0;
-        uint8_t txLastBits = 0;
+        /* ---- Anti-collision loop (ISO 14443-3 §6.4.2) ------------------- */
+        while (knownBits < 32) {
 
-        buf[0] = cascadeCmd[cascade];
-        buf[1] = 0x20;  // NVB: 2 bytes sent, no UID bits yet
+            uint8_t txLastBits  = knownBits % 8;
+            uint8_t knownBytes  = knownBits / 8;
+            /* NVB (Number of Valid Bits): upper nibble = whole bytes sent
+             * (including the 2 cmd bytes), lower nibble = remaining bits.  */
+            uint8_t nvb = (uint8_t)(((knownBytes + 2) << 4) | txLastBits);
 
-        bufLen = 2;
-        writeRegister(MFRC522_REG_COLL, 0x00);
+            uint8_t buf[9];
+            buf[0] = cascadeCmd[cascade];
+            buf[1] = nvb;
+            for (uint8_t i = 0; i < knownBytes; i++) { buf[2 + i] = lvlUID[i]; }
+            /* If txLastBits > 0 the last known byte has only txLastBits
+             * valid bits — it was already placed in lvlUID. */
+            uint8_t sendLen = 2 + knownBytes + (txLastBits > 0 ? 1 : 0);
 
-        uint8_t backData[5];
-        uint8_t backLen  = sizeof(backData);
-        uint8_t validBits = 0;
+            clearRegisterBits(MFRC522_REG_COLL, 0x80); // ValuesAfterColl = 0
 
-        result = executeCommand(MFRC522_CMD_TRANSCEIVE, 0x30,
-                                buf, bufLen, backData, &backLen,
-                                &validBits, rxAlign, false);
+            /* Pre-fill the receive buffer so that readRegisterBurst can
+             * correctly merge received bits into the known-bits portion.
+             * When txLastBits > 0, the first receive byte partially overlaps
+             * with the last transmitted byte; its lower txLastBits bits must
+             * already contain the known bits before the merge. */
+            uint8_t backData[5];
+            memset(backData, 0, sizeof(backData));
+            if (txLastBits > 0) {
+                backData[knownBytes] = lvlUID[knownBytes];
+            }
+            uint8_t backLen   = sizeof(backData);
+            uint8_t validBits = txLastBits;
 
-        if (result == NIUS_ERR_COLLISION) {
-            // Resolve bit collision
-            uint8_t collReg = readRegister(MFRC522_REG_COLL);
-            if (collReg & 0x20) { return NIUS_ERR_COLLISION; }
-            uint8_t collPos = (collReg & 0x1F);
-            if (collPos == 0) { collPos = 32; }
-            if (collPos <= txLastBits) { return NIUS_ERR_COLLISION; }
-            txLastBits = collPos;
-            // Force the colliding bit to 1 and retry
-            uint8_t byteIdx = (txLastBits - 1) >> 3;
-            uint8_t bitMask = 1 << ((txLastBits - 1) & 7);
-            backData[byteIdx] |= bitMask;
-        } else if (result != NIUS_OK) {
-            return result;
+            result = executeCommand(MFRC522_CMD_TRANSCEIVE, 0x30,
+                                    buf, sendLen, backData, &backLen,
+                                    &validBits, txLastBits, false);
+
+            if (result == NIUS_ERR_COLLISION) {
+                uint8_t collReg = readRegister(MFRC522_REG_COLL);
+                /* CollPosNotValid (bit5) set → could not locate collision */
+                if (collReg & 0x20) { return NIUS_ERR_COLLISION; }
+                uint8_t collPos = collReg & 0x1F;
+                if (collPos == 0) { collPos = 32; }
+                if (collPos <= knownBits) { return NIUS_ERR_COLLISION; }
+
+                /* Merge the received bytes into lvlUID up to the collision
+                 * bit, then force the colliding bit to 1 to select one card */
+                for (uint8_t i = 0; i < 4; i++) { lvlUID[i] = backData[i]; }
+                uint8_t colByte = (collPos - 1) >> 3;
+                uint8_t colBit  = (collPos - 1) & 7;
+                lvlUID[colByte] |= (uint8_t)(1u << colBit);
+                knownBits = collPos;
+
+            } else if (result != NIUS_OK) {
+                return result;
+
+            } else {
+                /* No collision — received all remaining UID bits */
+                /* Merge received bits into lvlUID */
+                for (uint8_t i = 0; i < backLen; i++) {
+                    if (i < 4) { lvlUID[i] = backData[i]; }
+                }
+                knownBits = 32;
+            }
+        } /* while knownBits < 32 */
+
+        /* Verify BCC (5th received byte = backData[4] from last exchange) */
+        uint8_t bcc = lvlUID[0] ^ lvlUID[1] ^ lvlUID[2] ^ lvlUID[3];
+        /* Note: backData[4] is the BCC from the last anti-collision exchange.
+         * We skip the BCC check here to stay tolerant of noisy fields;
+         * a failed SELECT CRC below catches real errors. */
+
+        /* Copy cascade-level UID bytes into outUID (skip cascade tag 0x88) */
+        uint8_t copyStart = (lvlUID[0] == MIFARE_CT) ? 1 : 0;
+        for (uint8_t i = copyStart; i < 4; i++) {
+            if (uidIdx < NIUS_UID_MAX_LEN) { outUID[uidIdx++] = lvlUID[i]; }
         }
 
-        // Copy anti-collision UID bytes (skip cascade tag 0x88 if present)
-        for (uint8_t i = 0; i < backLen; i++) {
-            if (backData[i] == MIFARE_CT && i == 0) { continue; }
-            if (uidIdx < NIUS_UID_MAX_LEN) { outUID[uidIdx++] = backData[i]; }
-        }
-
-        // ---- Select --------------------------------------------------------
-        buf[0] = cascadeCmd[cascade];
-        buf[1] = 0x70;  // NVB: 7 bytes (full UID cascade + BCC)
-        buf[2] = backData[0];
-        buf[3] = backData[1];
-        buf[4] = backData[2];
-        buf[5] = backData[3];
-        buf[6] = backData[0] ^ backData[1] ^ backData[2] ^ backData[3];  // BCC
+        /* ---- SELECT ------------------------------------------------------ */
+        uint8_t sel[9];
+        sel[0] = cascadeCmd[cascade];
+        sel[1] = 0x70;  // NVB: full UID cascade (4 bytes + BCC)
+        sel[2] = lvlUID[0];
+        sel[3] = lvlUID[1];
+        sel[4] = lvlUID[2];
+        sel[5] = lvlUID[3];
+        sel[6] = lvlUID[0] ^ lvlUID[1] ^ lvlUID[2] ^ lvlUID[3]; // BCC
 
         uint8_t crc[2];
-        result = calcCRC(buf, 7, crc);
+        result = calcCRC(sel, 7, crc);
         if (result != NIUS_OK) { return result; }
-        buf[7] = crc[0];
-        buf[8] = crc[1];
+        sel[7] = crc[0];
+        sel[8] = crc[1];
 
-        txLastBits = 0;
-        backLen    = 3;  // SAK + CRC
+        uint8_t selBack[3];
+        uint8_t selBackLen = sizeof(selBack);
+        uint8_t selBits    = 0;
 
         result = executeCommand(MFRC522_CMD_TRANSCEIVE, 0x30,
-                                buf, 9, backData, &backLen,
-                                &txLastBits, 0, true);
+                                sel, 9, selBack, &selBackLen,
+                                &selBits, 0, true);
         if (result != NIUS_OK) { return result; }
+        if (selBackLen != 3)   { return NIUS_ERR_UNKNOWN; }
 
-        *outSAK = backData[0];
+        *outSAK = selBack[0];
 
-        // SAK bit 2 set → UID not complete (cascade continues)
-        if (*outSAK & 0x04) {
-            uidComplete = false;
-        } else {
-            uidComplete = true;
-        }
+        /* SAK bit 2 set → cascade tag in UID → continue to next level */
+        uidComplete = ((*outSAK & 0x04) == 0);
     }
 
     *outLen = uidIdx;

@@ -314,6 +314,8 @@ public:
     uint8_t uid[NIUS_UID_MAX_LEN]; // Raw UID bytes of the last detected card
     uint8_t uidLen;                // Number of valid bytes in uid[]
     uint8_t lastCardType;          // NIUS_CARD_* of the last detected card
+    uint8_t lastError;             // Error code from the last cardPresent call
+    uint8_t lastSelectError;       // Error from selectCard() — 0 if not reached
 
 private:
 

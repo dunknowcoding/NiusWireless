@@ -35,10 +35,8 @@ NiusRC522 rfid(RC522_CS_PIN, RC522_RST_PIN, RC522_SCK_PIN, RC522_MOSI_PIN, RC522
 void setup() {
     Serial.begin(9600);
 
-    // Wait for Serial Monitor to open (needed on native-USB boards)
-    while (!Serial) {
-        delay(10);
-    }
+    // Give USB CDC time to enumerate (avoids blocking on while(!Serial))
+    delay(1500);
 
     Serial.println("NiusWireless — RC522 Basic Example");
     Serial.println("-----------------------------------");
@@ -57,9 +55,10 @@ void setup() {
 }
 
 void loop() {
-    // cardPresent() returns true when a card is detected and selected.
-    // UID and card type are stored inside the rfid object.
-    if (rfid.cardPresent()) {
+    // cardPresentWake() uses WUPA — detects both new cards (IDLE) and
+    // previously halted cards (HALT state), giving reliable detection when
+    // tags are permanently in the field.
+    if (rfid.cardPresentWake()) {
         Serial.print("UID: ");
         Serial.println(rfid.getUID());
 
