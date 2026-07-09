@@ -28,6 +28,8 @@
  *   Renesas RA (Arduino UNO R4 WiFi / Minima)
  */
 
+#include "NiusCrypto1.h"
+
 #ifndef NIUS_RC522_H
 #define NIUS_RC522_H
 
@@ -370,6 +372,41 @@ public:
                        uint8_t rxAlign = 0,
                        bool checkCRC = true);
 
+    /**
+     * transceiveRaw() — Like transceive(), but operates on the raw
+     * bit stream: NO automatic CRC append/verify, NO automatic parity
+     * insertion, NO automatic TxCRC handling. The caller is responsible
+     * for packing parity bits into the frame and computing the CRC by
+     * hand. This is the building block for the nested-authentication
+     * key-recovery attack, which needs to send encrypted frames whose
+     * keystream must align with the cipher state byte-for-byte.
+     *
+     * sendData    — bytes to write to the FIFO (LSB first)
+     * sendLen     — number of bytes to send (0..16)
+     * lastBits    — number of valid bits in the LAST byte (0..7); for
+     *                8-bit-aligned frames, pass 0
+     * backData    — buffer for the response (must be ≥ sendLen + 2)
+     * backLen     — in: capacity of backData; out: bytes received
+     * validBits   — out: valid bits in last received byte (nullptr if
+     *                you don't need it)
+     *
+     * Returns NIUS_OK on success.
+     */
+    uint8_t transceiveRaw(uint8_t *sendData, uint8_t sendLen,
+                          uint8_t lastBits,
+                          uint8_t *backData, uint8_t *backLen,
+                          uint8_t *validBits = nullptr);
+
+    /**
+     * setMFParity() — Enable or disable the MFRC522's automatic parity
+     * insertion / check. Default state is ON (parity enabled).
+     *
+     * Call parityOff() before sending a manually-paritied frame
+     * (e.g. during a key-recovery attack), and parityOn() afterwards
+     * to restore normal operation.
+     */
+    void setMFParity(bool enabled);
+
     /* -------------------------------------------------------------------
      * Key recovery (Proxmark3-style attacks on MIFARE Classic)
      * ------------------------------------------------------------------- */
@@ -553,6 +590,25 @@ public:
     uint8_t lastError;             // Error code from the last cardPresent call
     uint8_t lastSelectError;       // Error from selectCard() — 0 if not reached
 
+    /* --- MFRC522 internal operations (public because raw TRANSCEIVE
+     * users need them — calcCRC especially is needed to pack the CRC
+     * into the auth cmd when running the cipher manually).        --- */
+    uint8_t executeCommand(uint8_t cmd,
+                           uint8_t waitIRQ,
+                           uint8_t *sendData, uint8_t sendLen,
+                           uint8_t *backData, uint8_t *backLen,
+                           uint8_t *validBits,
+                           uint8_t rxAlign,
+                           bool checkCRC,
+                           uint8_t txLastBits = 0);
+
+    /* calcCRC / verifyCRC are needed by raw TRANSCEIVE code (e.g. the
+     * nested-auth trace sketch) that packs the CRC into its own auth
+     * frames. They used to be private, but the attack surface for them
+     * is "anyone who can run transceiveRaw". */
+    uint8_t calcCRC(uint8_t *data, uint8_t len, uint8_t *result);
+    bool    verifyCRC(uint8_t *data, uint8_t len);
+
 private:
 
     /* --- Pin configuration -------------------------------------------- */
@@ -576,19 +632,6 @@ private:
     void readRegisterBurst(uint8_t addr, uint8_t count,
                            uint8_t *values, uint8_t rxAlign);
     void writeRegisterBurst(uint8_t addr, uint8_t count, uint8_t *values);
-
-    /* --- MFRC522 internal operations ---------------------------------- */
-    uint8_t executeCommand(uint8_t cmd,
-                           uint8_t waitIRQ,
-                           uint8_t *sendData, uint8_t sendLen,
-                           uint8_t *backData, uint8_t *backLen,
-                           uint8_t *validBits,
-                           uint8_t rxAlign,
-                           bool checkCRC);
-    uint8_t calcCRC(uint8_t *data, uint8_t len, uint8_t *result);
-    bool    verifyCRC(uint8_t *data, uint8_t len);
-
-    /* --- ISO 14443A card protocol ------------------------------------- */
     uint8_t requestA(uint8_t *atqa);
     uint8_t wakeupA(uint8_t *atqa);
     uint8_t requestOrWakeup(uint8_t cmd, uint8_t *atqa);

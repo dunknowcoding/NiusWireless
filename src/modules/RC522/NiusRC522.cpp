@@ -453,74 +453,176 @@ uint8_t NiusRC522::transceive(uint8_t *sendData, uint8_t sendLen,
                            validBits, rxAlign, checkCRC);
 }
 
+uint8_t NiusRC522::transceiveRaw(uint8_t *sendData, uint8_t sendLen,
+                                 uint8_t lastBits,
+                                 uint8_t *backData, uint8_t *backLen,
+                                 uint8_t *validBits) {
+    if (lastBits > 7) { lastBits = 0; }
+    return executeCommand(MFRC522_CMD_TRANSCEIVE, 0x30,
+                           sendData, sendLen, backData, backLen,
+                           validBits, /*rxAlign=*/0,
+                           /*checkCRC=*/false,
+                           lastBits);
+}
+
+void NiusRC522::setMFParity(bool enabled) {
+    // MFRC522_REG_MF_RX (0x1D) bit 4 = "MF parity" — the card side of
+    // the parity handling. Disabling it tells the chip to leave the
+    // parity bits in the FIFO raw, exactly as they came over the air.
+    uint8_t val = readRegister(MFRC522_REG_MF_RX);
+    if (enabled) { val &= ~0x10; } else { val |= 0x10; }
+    writeRegister(MFRC522_REG_MF_RX, val);
+}
+
 /* =======================================================================
  * Crypto1 cipher (for key-recovery attacks)
  *
- * Modelled on the public-domain implementations in libnfc and Proxmark3.
- * The cipher is a 48-bit LFSR with a 20-bit non-linear function and a
- * 16-bit non-linear output filter. The state is kept as two 32-bit
- * halves (odd/even) for speed on 8/32-bit MCUs.
+ * Ported from the public-domain Crapto1 / mfoc implementations
+ * (https://github.com/nfc-tools/mfoc/blob/master/src/crypto1.c, .../crapto1.{c,h}).
+ * The cipher is a 48-bit LFSR with a 20-bit non-linear input filter and
+ * a 16-bit non-linear output filter. State is held as two 32-bit halves
+ * (odd / even) so the cipher is 8 bytes per session — fits comfortably
+ * on the UNO R4 alongside the rest of the library.
+ *
+ * On Arduino, we deliberately omit the 1 MB filter LUT (1<<20) that the
+ * upstream uses for speed; the trade is one extra function call per
+ * `filter()` invocation. The embedded target really can't afford that
+ * much RAM.
+ *
+ * Functions in this namespace are pure C-linkage: they only take built-in
+ * types and stack buffers, and they never call `malloc`. Suitable for
+ * running inside `recoverAllKeys`, the trace-collection sketch, or any
+ * future Crypto1 attack implementation.
  * ====================================================================== */
 
 namespace niusCrypto1 {
-    // 48-bit LFSR split into two 32-bit halves, low bit = most recent
-    struct State {
-        uint32_t odd;   // bits 47, 45, 43, ..., 1
-        uint32_t even;  // bits 46, 44, 42, ..., 0
-    };
+    // (State, init, clkBit, clkByte, clkWord, filter, prng_successor are
+    //  declared in NiusCrypto1.h — implementation lives here.)
 
-    // Feedback polynomials (Crapto1 / Proxmark3 source)
-    static const uint32_t POLY_ODD  = 0x29CE5C;
-    static const uint32_t POLY_EVEN = 0x870804;
+    // Polynomial taps (split into odd / even halves of the 48-bit LFSR).
+    static const uint32_t LF_POLY_ODD  = 0x29CE5C;
+    static const uint32_t LF_POLY_EVEN = 0x870804;
 
-    static inline uint32_t getBit(const uint32_t *x, uint32_t i) {
-        return (x[i >> 5] >> (i & 0x1F)) & 1;
+    // Even-parity on the lowest 32 bits (used in Crypto1 keystream feedback).
+    static inline uint8_t parity32(uint32_t x) {
+        x ^= x >> 16;
+        x ^= x >> 8;
+        x ^= x >> 4;
+        return (uint8_t)((0x6996 >> (x & 0xF)) & 1);
     }
 
-    // 5-bit non-linear function f
-    static inline uint8_t f20(const State *s) {
-        return (uint8_t)(
-            (getBit(&s->odd,  9) ^ getBit(&s->even,  9)) |
-            (getBit(&s->odd, 11) ^ getBit(&s->even, 11)) |
-            (getBit(&s->odd, 13) ^ getBit(&s->even, 13)) |
-            ((getBit(&s->odd, 15) ^ getBit(&s->even, 15)) &
-             (getBit(&s->odd,  9) ^ getBit(&s->even,  9)))
-        );
-    }
+    // 20-bit non-linear filter f(x) — defined in NiusCrypto1.h.
+    // (skipped here to avoid a redefinition in the .cpp namespace.)
 
-    // One clock of the LFSR (in: keystream bit, out: keystream bit)
-    static inline uint8_t lfsr_roll(uint8_t in, State *s) {
-        uint8_t out = (uint8_t)(s->odd ^ s->even);
-        out ^= (uint8_t)(POLY_ODD  & s->odd);
-        out ^= (uint8_t)(POLY_EVEN & s->even);
-        out ^= f20(s) ^ in;
-        s->even = (s->even << 1) | (s->odd >> 31);
-        s->odd  = (s->odd  << 1) | (out  & 1);
-        return out;
-    }
+    static inline uint32_t bit32(uint32_t x, uint32_t n) { return (x >> n) & 1U; }
 
-    void init(State *s, const uint8_t key[6], const uint8_t uid[4], uint8_t sector) {
+    // Initialize a Crypto1 state from a 48-bit key (passed in the low 6 bytes
+    // of `key`). Layout matches mfoc's `crypto1_create`: bit i of the key
+    // ends up at LFSR position (i^7) of the odd / even halves.
+    void init(State *s, uint64_t key) {
         s->odd = s->even = 0;
+        for (int i = 47; i > 0; i -= 2) {
+            s->odd  = (s->odd  << 1) | bit32((uint32_t)(key >> 32), (i - 1) ^ 7);
+            s->even = (s->even << 1) | bit32((uint32_t)(key >> 32), i ^ 7);
+        }
+    }
+
+    // Initialize from a 6-byte key directly (same as init() with the truncated
+    // 48-bit interpretation; equivalent to what mfoc does).
+    void init(State *s, const uint8_t key[6]) {
         uint64_t k = ((uint64_t)key[0] << 40) | ((uint64_t)key[1] << 32) |
                      ((uint64_t)key[2] << 24) | ((uint64_t)key[3] << 16) |
                      ((uint64_t)key[4] <<  8) | ((uint64_t)key[5]);
-        uint64_t u = ((uint64_t)uid[0] << 32) | ((uint64_t)uid[1] << 24) |
-                     ((uint64_t)uid[2] << 16) | ((uint64_t)uid[3] <<  8) | (uint64_t)uid[0];
-        uint64_t init = (k << 32) | (u << 16) | (uint64_t)(sector & 0x3F) | 0x8001ULL;
-        for (int i = 47; i > 0; i -= 2) {
-            s->odd  = (s->odd  << 1) | (uint32_t)getBit((uint32_t *)&init, i);
-            s->even = (s->even << 1) | (uint32_t)getBit((uint32_t *)&init, i - 1);
-        }
-        for (int i = 0; i < 32; i++) { (void)lfsr_roll(0, s); }
+        init(s, k);
     }
 
-    uint8_t byte(State *s, uint8_t in, bool encrypted) {
-        uint8_t out = 0;
+    // One clock of the cipher. in is the input bit; is_encrypted is the
+    // direction flag from mfoc. Returns the keystream bit for this round.
+    // (Renamed from mfoc's `bit` to avoid clash with the Arduino `bit()`
+    // macro on AVR/renesas builds.)
+    uint8_t clkBit(State *s, uint8_t in, int is_encrypted) {
+        uint32_t feedin;
+        uint8_t ret = filter(s->odd);
+
+        feedin  = ret & (uint32_t)(!!is_encrypted);
+        feedin ^= (uint32_t)!!in;
+        feedin ^= LF_POLY_ODD  & s->odd;
+        feedin ^= LF_POLY_EVEN & s->even;
+        s->even = (s->even << 1) | parity32(feedin);
+
+        // Swap odd / even halves — required by the cipher structure.
+        s->odd ^= (s->odd  ^= s->even, s->even ^= s->odd);
+
+        return ret;
+    }
+
+    // Clock 8 bits; `in` is a plaintext byte (or ciphertext byte, depending
+    // on direction); `is_encrypted == 1` means the input *was* already
+    // encrypted (so XOR with keystream to recover plaintext). Returns the
+    // ciphertext (or plaintext) byte for these 8 rounds.
+    uint8_t clkByte(State *s, uint8_t in, int is_encrypted) {
+        uint8_t ret = 0;
         for (int i = 0; i < 8; i++) {
-            uint8_t ks = lfsr_roll(in & 1, s);
-            out |= (ks ^ (encrypted ? 0 : 0)) << i;
+            ret |= clkBit(s, bit32(in, i), is_encrypted) << i;
+        }
+        return ret;
+    }
+
+    // Clock 32 bits with bit-reversed input (mfoc convention). Lets us
+    // ingest uint32_t values directly without bit-twiddling in callers.
+    uint32_t clkWord(State *s, uint32_t in, int is_encrypted) {
+        uint32_t ret = 0;
+        for (int i = 0; i < 32; i++) {
+            ret |= (uint32_t)clkBit(s, bit32(in, i ^ 24), is_encrypted) << i;
+        }
+        return ret;
+    }
+
+    // Reverse the state bits into a single 64-bit LFSR value (for debugging
+    // or for use by future lfsr_recovery extensions).
+    uint64_t lfsr(const State *s) {
+        uint64_t out = 0;
+        for (int i = 23; i >= 0; --i) {
+            out = (out << 1) | bit32(s->odd,  (uint32_t)i ^ 3);
+            out = (out << 1) | bit32(s->even, (uint32_t)i ^ 3);
         }
         return out;
+    }
+
+    // ===== Helpers for the tag's PRNG (16-bit LFSR that generates n_T) =====
+    //
+    // The card's random-number generator is a 16-bit Galois LFSR with
+    // feedback polynomial x^16 + x^14 + x^13 + x^11 + 1. Each auth advances
+    // it by 64 cycles (32 for the first n_T, 32 for the post-n_R n_T).
+    // Proxmark3's `prng_successor` works in network-endian (MSB-first)
+    // representation; we replicate that exactly.
+
+    static uint32_t swapEnd32(uint32_t x) {
+        x = ((x >> 8) & 0x00FF00FFU) | ((x & 0x00FF00FFU) << 8);
+        return (x >> 16) | (x << 16);
+    }
+
+    uint32_t prng_successor(uint32_t x, uint32_t n) {
+        x = swapEnd32(x);
+        while (n--) {
+            x = (x >> 1) | (((x >> 16) ^ (x >> 18) ^ (x >> 19) ^ (x >> 21)) << 31);
+        }
+        return swapEnd32(x);
+    }
+
+    // Nonce distance: number of PRNG advances from `from` to `to`.
+    // Built on-the-fly (no 128KB lookup like mfoc) using the linear
+    // structure of the LFSR.
+    int nonce_distance(uint32_t from, uint32_t to) {
+        // Find position of `to` in the PRNG sequence starting from any seed.
+        // Walk forward from `from` until we hit `to`, capped at the period.
+        uint32_t a = from, b = to;
+        int n = 0;
+        do {
+            a = prng_successor(a, 1);
+            n++;
+        } while (a != b && n < 65536);
+        return (a == b) ? n : -1;
     }
 }  // namespace niusCrypto1
 
@@ -822,9 +924,14 @@ uint8_t NiusRC522::executeCommand(uint8_t cmd,
                                    uint8_t *backData, uint8_t *backLen,
                                    uint8_t *validBits,
                                    uint8_t rxAlign,
-                                   bool checkCRC) {
-    uint8_t txLastBits = validBits ? *validBits : 0;
-    uint8_t bitFraming = (rxAlign << 4) | txLastBits;
+                                   bool checkCRC,
+                                   uint8_t txLastBits) {
+    // If caller did not pass an explicit txLastBits, derive it from
+    // validBits (the standard library's convention — pointing to a valid
+    // bits byte tells us to send that many bits in the last byte).
+    if (!sendData || sendLen == 0) { txLastBits = 0; }
+    else if (txLastBits == 0 && validBits) { txLastBits = *validBits; }
+    uint8_t bitFraming = (rxAlign << 4) | (txLastBits & 0x07);
 
     writeRegister(MFRC522_REG_COMMAND,     MFRC522_CMD_IDLE);
     writeRegister(MFRC522_REG_COM_IRQ,     0x7F);          // Clear all IRQ bits
