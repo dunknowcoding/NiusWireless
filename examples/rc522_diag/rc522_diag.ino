@@ -519,6 +519,60 @@ void loop() {
             if (rr != 0) dumpFailureRegs(rfid);
         }
 
+        // (13) CUID HALT-then-WRITE backdoor (FM11RF08S era).
+        //      The classic Gen1/Gen2 CUID backdoor is:
+        //        1. HALT (0x50 0x00 + CRC) puts the card in HALTED state
+        //        2. Immediately (no WUPA) MIFARE_CMD_WRITE (0xA0 + 0x00 +
+        //           16 bytes new block-0 + CRC). The chip recognises
+        //           this non-standard sequence as the magic backdoor.
+        //      Even on a bricked card this protocol-state path differs
+        //      from the standard READ/AUTH one and may or may not be
+        //      refused.
+        Serial.println(F("\n  (13) CUID HALT+WRITE backdoor attempt"));
+        rfid.antennaOff();
+        delay(200);
+        rfid.antennaOn();
+        rfid.reset();
+        delay(100);
+        if (!rfid.cardPresentWake()) {
+            Serial.println(F("    re-detect failed"));
+        } else {
+            // HALT first
+            uint8_t halt[2] = { 0x50, 0x00 };
+            uint8_t hb[16], hbLen = sizeof(hb);
+            rawTransceive(rfid, halt, 2, hb, &hbLen);
+            Serial.print(F("    raw HALT = "));
+            Serial.print(errName(hbLen ? NIUS_OK : NIUS_ERR_CRC));
+            Serial.print(F("  hbLen=")); Serial.println(hbLen);
+
+            // Then WRITE block 0 with all-FF new UID (16 bytes + 2 CRC).
+            // We pull the chip-side CRC through a manual calc using
+            // calcCRC(); for raw transceive we just send 0xA0 0x00 +
+            // 16-bytes-new-uid. CRC check can be disabled here.
+            uint8_t wr[18];
+            wr[0] = 0xA0;
+            wr[1] = 0x00;
+            for (uint8_t i = 0; i < 16; i++) { wr[2 + i] = 0xFF; }  // new UID = FF FF...FF
+            uint8_t back[16];
+            uint8_t backLen = sizeof(back);
+            // Use the high-level writeBlock() so the firmware builds the
+            // full WRITE/ACK handshake the way the card expects.
+            uint8_t newBlock[16];
+            for (uint8_t i = 0; i < 16; i++) { newBlock[i] = 0xFF; }
+            uint8_t rr = rfid.writeBlock(0, newBlock);
+            Serial.print(F("    CUID backdoor writeBlock(0, all-FF) = "));
+            Serial.println(errName(rr));
+            if (rr != 0) dumpFailureRegs(rfid);
+            delay(100);
+
+            // After WRITE attempt, re-select and probe GET_VERSION to
+            // see if anything about the card state changed.
+            uint8_t v[8];
+            uint8_t rV = rfid.getNTAGVersion(v);
+            Serial.print(F("    post-write GET_VERSION = "));
+            Serial.println(errName(rV));
+        }
+
     } else {
         Serial.println(F("[unknown card type — running GET_VERSION + readPage(0) probe]"));
 
