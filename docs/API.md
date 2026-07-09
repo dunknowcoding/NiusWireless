@@ -18,7 +18,7 @@ Version 1.0.0
 10. [Card Type Constants](#card-type-constants)
 11. [Wiring Quick-Reference](#wiring-quick-reference)
 
-> **Tip** — the headings below scale from "I just want to detect a card" → "I want to read/write blocks" → "I want to write raw protocol". If you only need the first level, skip ahead to [Quick start](#rc522-quick-start) and stop reading after [Common helpers](#rc522-common-helpers).
+> **Tip** — the RC522 section scales from "I just want to detect a card" → "I want to read/write blocks" → "I want to write raw protocol". If you only need the first level, skip ahead to [Quick start](#rc522-quick-start) and stop reading after [Common helpers](#rc522-common-helpers). For "the card isn't responding — why?", jump to [Debug / diagnostics](#rc522-debug).
 
 ---
 
@@ -142,9 +142,8 @@ If you only need the UID and a recommended example for the card family, that loo
 | `examples/rc522_adv` | 50 lines | One-shot dump + Classic block-0 roundtrip + register inspection. |
 | `examples/rc522_s50` | 60 lines | Tightly focused MIFARE Classic 1K write/read/restore demo. |
 | `examples/rc522_tag` | 70 lines | Type-adaptive: Classic dump / UL dump / CUID UID-change demo. |
-| `examples/rc522_diag` | 540 lines | Field diagnostic — register dump, failure-IRQ decoding, recovery probes for bricked cards. |
 
-The first four are user-facing. `rc522_diag` is a tooling sketch for when you need to understand *why* a card isn't responding (firmware-vs-card diagnosis).
+The first four are user-facing. For field debugging — register inspection, post-failure IRQ decoding, bricked-card recovery — use the [`printRegisters` / `printStatus` / `powerCycle` debug methods](#rc522-debug) below; no separate diagnostic sketch is needed.
 
 ---
 
@@ -615,6 +614,58 @@ void    clearRegisterBits(uint8_t addr, uint8_t mask)
 Direct access to MFRC522 registers.  Register addresses are defined in
 `NiusMFRC522_Reg.h` (e.g. `MFRC522_REG_VERSION` = 0x37).  Use these for features
 not covered by the high-level API.
+
+---
+
+### <a id="rc522-debug"></a>Debug / diagnostics
+
+Three high-level helpers for "the card isn't responding — is it me or the card?"
+
+#### `printRegisters()`
+
+```cpp
+void printRegisters(Print &out = Serial);
+```
+
+Print the chip's configuration registers: `VersionReg`, `CommandReg`, `ModeReg`,
+`TxASKReg`, `TModeReg` / `TPrescalerReg` / `TReloadReg`, and `TxControlReg` (with
+the antenna on/off state spelled out). Use this when you want to know whether
+the chip is configured correctly — wrong timer / TxControl values, missing
+modulation, etc., are typical firmware problems.
+
+#### `printStatus()`
+
+```cpp
+void printStatus(Print &out = Serial);
+```
+
+Print the post-transceive IRQ / ErrorReg / Status2Reg / FIFOLevelReg, and
+decode any set bits in ErrorReg (`BufferOvfl`, `ParityErr`, `CollErr`,
+`ProtocolErr`, ...) and ComIrqReg (`TimerIRq`, `RxIRq`, `TxIRq`, `IdleIRq`).
+Use this right after a failed transceive to see *why* it failed.
+
+#### `powerCycle()`
+
+```cpp
+void powerCycle(uint16_t holdMs = 1000);
+```
+
+Disable the antenna for `holdMs` milliseconds, then re-enable and SOFT_RESET
+the chip (with the register re-init `reset()` already applies). On cards
+whose protocol state has latched, the field-down period lets the
+card-side capacitor discharge so the next interaction boots from a clean
+state. Long power-cycles (>=30 s) are usually enough to partially recover
+a stuck MIFARE Ultralight / CUID card on this hardware.
+
+The companion sketch for diagnosing bricked cards is just a `loop()` that
+combines these:
+
+```cpp
+if (!rfid.cardPresentWake()) return;
+rfid.printRegisters();              // once at the top, then again per tag
+rfid.printStatus();                 // after each failed transceive
+rfid.powerCycle();                  // if a card returns AUTH/NAK gibberish
+```
 
 ---
 

@@ -639,8 +639,84 @@ void NiusRC522::clearRegisterBits(uint8_t addr, uint8_t mask) {
 }
 
 /* =======================================================================
- * Private — SPI helpers
+ * Debug / diagnostics
  * ====================================================================== */
+
+void NiusRC522::printRegisters(Print &out) {
+    uint8_t ver   = readRegister(MFRC522_REG_VERSION);
+    uint8_t cmd   = readRegister(MFRC522_REG_COMMAND);
+    uint8_t txask = readRegister(MFRC522_REG_TX_ASK);
+    uint8_t mode  = readRegister(MFRC522_REG_MODE);
+    uint8_t tmc   = readRegister(MFRC522_REG_T_MODE);
+    uint8_t tpres = readRegister(MFRC522_REG_T_PRESCALER);
+    uint8_t trh   = readRegister(MFRC522_REG_T_RELOAD_H);
+    uint8_t trl   = readRegister(MFRC522_REG_T_RELOAD_L);
+    uint8_t txctl = readRegister(MFRC522_REG_TX_CONTROL);
+
+    auto hex2 = [&out](uint8_t x) {
+        out.print(F("0x"));
+        if (x < 0x10) out.print('0');
+        out.print(x, HEX);
+    };
+
+    out.println(F("--- MFRC522 chip state ---"));
+    out.print(F("  VersionReg       ")); hex2(ver);  out.println();
+    out.print(F("  CommandReg       ")); hex2(cmd);  out.println();
+    out.print(F("  ModeReg          ")); hex2(mode);
+    out.print(F("    TxASKReg         ")); hex2(txask); out.println();
+    out.print(F("  TModeReg         ")); hex2(tmc);   out.println();
+    out.print(F("  TPrescalerReg    ")); hex2(tpres); out.println();
+    out.print(F("  TReload          "));   hex2(trh);
+    out.print(' '); hex2(trl); out.println();
+    out.print(F("  TxControlReg     ")); hex2(txctl);
+    if ((txctl & 0x03) == 0x03) out.println(F("  antenna ON"));
+    else                       out.println(F("  antenna OFF"));
+    out.println();
+}
+
+void NiusRC522::printStatus(Print &out) {
+    uint8_t irq  = readRegister(MFRC522_REG_COM_IRQ);
+    uint8_t err  = readRegister(MFRC522_REG_ERROR);
+    uint8_t s2   = readRegister(MFRC522_REG_STATUS2);
+    uint8_t fifo = readRegister(MFRC522_REG_FIFO_LEVEL);
+
+    auto hex2 = [&out](uint8_t x) {
+        out.print(F("0x"));
+        if (x < 0x10) out.print('0');
+        out.print(x, HEX);
+    };
+
+    out.print(F("IRQ="));     hex2(irq);
+    out.print(F(" ERR="));    hex2(err);
+    out.print(F(" Status2=")); hex2(s2);
+    out.print(F(" FIFOLev=")); hex2(fifo);
+    out.println();
+    if (err) {
+        if (err & 0x01) out.println(F("  - BufferOvfl"));
+        if (err & 0x02) out.println(F("  - ParityErr"));
+        if (err & 0x04) out.println(F("  - CollErr"));
+        if (err & 0x08) out.println(F("  - CollErr (post)"));
+        if (err & 0x10) out.println(F("  - ProtocolErr"));
+        if (err & 0x20) out.println(F("  - TempErr"));
+        if (err & 0x40) out.println(F("  - BufferSizeErr"));
+    }
+    // Common ComIrqReg bits — readers can decode TimerIRq / RxIRq / TxIRq.
+    if (irq & 0x01) out.println(F("  - TimerIRq fired (chip's transceive timer expired)"));
+    if (irq & 0x20) out.println(F("  - RxIRq fired (card returned bytes)"));
+    if (irq & 0x40) out.println(F("  - TxIRq fired (data sent to card)"));
+    if (irq & 0x10) out.println(F("  - IdleIRq fired (chip went idle)"));
+}
+
+void NiusRC522::powerCycle(uint16_t holdMs) {
+    antennaOff();
+    uint16_t n = (holdMs + 999) / 1000;
+    for (uint16_t i = 0; i < n; i++) { delay(1000); }
+    reset();         // re-init timer / TxASK / Mode after SOFT_RESET
+}
+
+/* =======================================================================
+ * Private — SPI helpers
+ * ======================================================================= */
 
 void NiusRC522::csLow()  { digitalWrite(_csPin, LOW);  }
 void NiusRC522::csHigh() { digitalWrite(_csPin, HIGH); }

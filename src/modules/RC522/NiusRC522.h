@@ -271,6 +271,50 @@ public:
     uint8_t dumpToSerial(const uint8_t *key = nullptr);
 
     /* -------------------------------------------------------------------
+     * Debug / diagnostics
+     * Use these when a card isn't responding and you need to know
+     * whether the firmware or the card is at fault.
+     * ------------------------------------------------------------------ */
+
+    /**
+     * printRegisters() — Print the MFRC522 chip's configuration
+     * registers to `out` (default: Serial). The output groups them as:
+     *   - chip identification (VersionReg)
+     *   - protocol state (CommandReg, ModeReg, TxASKReg)
+     *   - timer (TMode / TPrescaler / TReload)
+     *   - RF antenna state (TxControlReg)
+     *
+     * If these registers don't look right, the chip is misconfigured
+     * (firmware problem). If they look fine and the card still doesn't
+     * respond, the card is the problem.
+     */
+    void printRegisters(Print &out = Serial);
+
+    /**
+     * printStatus() — Print the post-transceive debug registers to
+     * `out` (default: Serial) and decode any set error-flag bits:
+     *   - ComIrqReg (0x04)  - interrupt source
+     *   - ErrorReg  (0x06)  - protocol / buffer / parity errors
+     *   - Status2Reg (0x08) - Crypto1 / FIFO state
+     *   - FIFOLevelReg (0x0A)
+     *
+     * Call after a failed transceive to see *why* it failed.
+     */
+    void printStatus(Print &out = Serial);
+
+    /**
+     * powerCycle() — Antenna off for `holdMs` milliseconds, then
+     * antenna on and a fresh `reset()`. Used when a stuck card's
+     * protocol state has latched; the field-down period lets the
+     * card-side cap discharge so it boots from a fresh state.
+     *
+     * `holdMs` default = 1000 ms. On long power-downs the MFRC522
+     * analog state can drift on counterfeit chips (VersionReg=0x18);
+     * the embedded `reset()` covers that.
+     */
+    void powerCycle(uint16_t holdMs = 1000);
+
+    /* -------------------------------------------------------------------
      * MIFARE Classic operations
      * Authenticate before calling readBlock() / writeBlock().
      * ------------------------------------------------------------------ */
