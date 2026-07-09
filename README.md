@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Arduino Library](https://img.shields.io/badge/Arduino-Library-00979D.svg?logo=arduino&logoColor=white)](https://www.arduino.cc/reference/en/libraries/)
-![Version 1.0.0](https://img.shields.io/badge/version-1.0.0-success.svg)
+![Version 0.1.0](https://img.shields.io/badge/version-0.1.0-success.svg)
 ![Architectures: AVR • SAMD • ESP • nRF52 • STM32 • RP2040 • RA](https://img.shields.io/badge/architectures-AVR%20%E2%80%A2%20SAMD%20%E2%80%A2%20ESP%20%E2%80%A2%20nRF52%20%E2%80%A2%20STM32%20%E2%80%A2%20RP2040%20%E2%80%A2%20RA-blueviolet.svg)
 ![Maintained by NiusRobotLab](https://img.shields.io/badge/maintainer-NiusRobotLab-orange.svg)
 [![Repo](https://img.shields.io/badge/github-dunknowcoding%2FNiusWireless-181717.svg?logo=github)](https://github.com/dunknowcoding/NiusWireless)
