@@ -390,6 +390,135 @@ void loop() {
             delay(100);
         }
 
+        // (6) NTAG PWD_AUTH with default (all-zero) password.
+        //     Some CUID/EV1 chips have been seen with a 0000h default
+        //     password; if AUTH bypasses the lock-out, subsequent reads
+        //     may work.
+        Serial.println(F("  (6) raw PWD_AUTH (0x1A) with all-0 password"));
+        {
+            uint8_t rawCmd[6] = { 0x1A, 0x00, 0x00, 0x00, 0x00, 0x00 };
+            uint8_t back[16];
+            uint8_t backLen = sizeof(back);
+            uint8_t rr = rawTransceive(rfid, rawCmd, 6, back, &backLen);
+            Serial.print(F("    raw PWD_AUTH (0x00 0x00 0x00 0x00) = "));
+            Serial.print(errName(rr));
+            Serial.print(F("  backLen="));
+            Serial.println(backLen);
+            if (rr != 0) dumpFailureRegs(rfid);
+            delay(100);
+        }
+
+        // (7) Same PWD_AUTH but with the all-FF default some chip
+        //     revisions use.
+        Serial.println(F("  (7) raw PWD_AUTH (0x1A) with all-FF password"));
+        {
+            uint8_t rawCmd[6] = { 0x1A, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+            uint8_t back[16];
+            uint8_t backLen = sizeof(back);
+            uint8_t rr = rawTransceive(rfid, rawCmd, 6, back, &backLen);
+            Serial.print(F("    raw PWD_AUTH (0xFF 0xFF 0xFF 0xFF) = "));
+            Serial.print(errName(rr));
+            Serial.print(F("  backLen="));
+            Serial.println(backLen);
+            if (rr != 0) dumpFailureRegs(rfid);
+            delay(100);
+        }
+
+        // (8) Standard MIFARE HALT (sanity — card should ACK if alive).
+        Serial.println(F("  (8) raw HALT (0x50 0x00)"));
+        {
+            uint8_t rawCmd[2] = { 0x50, 0x00 };
+            uint8_t back[16];
+            uint8_t backLen = sizeof(back);
+            uint8_t rr = rawTransceive(rfid, rawCmd, 2, back, &backLen);
+            Serial.print(F("    raw HALT = "));
+            Serial.print(errName(rr));
+            Serial.print(F("  backLen="));
+            Serial.println(backLen);
+            if (rr != 0) dumpFailureRegs(rfid);
+            delay(100);
+        }
+
+        // (10) Power-cycle + readPage loop — does the card respond fresh
+        //      to every command if we tickle the field each time?
+        //      Reading several different page addresses to test whether
+        //      the brick is page-0-specific.
+        Serial.println(F("\n  (10) power-cycle + readPage sweep"));
+        for (uint8_t p = 0; p < 16; p += 4) {
+            // Re-select + a fresh 200 ms flicker so the card's protocol
+            // engine is in its post-reset "first command" state.
+            rfid.antennaOff();
+            delay(200);
+            rfid.antennaOn();
+            rfid.reset();
+            delay(100);
+            if (!rfid.cardPresentWake()) {
+                Serial.print(F("    p")); Serial.print(p);
+                Serial.println(F(" — re-detect failed, skipping"));
+                continue;
+            }
+            uint8_t buf[16];
+            uint8_t r = rfid.readPage(p, buf);
+            Serial.print(F("    p")); Serial.print(p);
+            Serial.print(F(" = "));
+            Serial.print(errName(r));
+            if (r == 0) {
+                Serial.print(F("  data: "));
+                printHex16(buf);
+            } else if (r != 0) {
+                Serial.print(F("  IRQ=0x")); Serial.print(rfid.readRegister(0x04), HEX);
+                Serial.print(F(" ERR=0x")); Serial.print(rfid.readRegister(0x06), HEX);
+            }
+            Serial.println();
+        }
+
+        // (11) Single power cycle, then chain several commands back-to-back
+        //      without re-cycling. The first returns AUTH; do the others
+        //      also return AUTH, or do they time out? This tells us whether
+        //      the protocol engine stays alive across multiple commands.
+        Serial.println(F("\n  (11) single power cycle, chained commands"));
+        rfid.antennaOff();
+        delay(200);
+        rfid.antennaOn();
+        rfid.reset();
+        delay(100);
+        if (!rfid.cardPresentWake()) {
+            Serial.println(F("    re-detect failed"));
+        } else {
+            for (uint8_t cmd = 0; cmd < 4; cmd++) {
+                uint8_t buf[16];
+                uint8_t r = rfid.readPage((cmd & 1) ? 4 : 0, buf);
+                Serial.print(F("    chained read #")); Serial.print(cmd);
+                Serial.print(F(": "));
+                Serial.println(errName(r));
+            }
+        }
+
+        // (12) Single power cycle, then MIFARE_CMD_WRITE (0xA0) attempts.
+        //      Some CUID chips respond to 0xA0 even when they should be
+        //      Ultralight (under the CUID backdoor).
+        Serial.println(F("\n  (12) MIFARE_CMD_WRITE (0xA0) attempts after cycle"));
+        rfid.antennaOff();
+        delay(200);
+        rfid.antennaOn();
+        rfid.reset();
+        delay(100);
+        if (!rfid.cardPresentWake()) {
+            Serial.println(F("    re-detect failed"));
+        } else {
+            // 0xA0 = MIFARE Classic WRITE. Send an address-only frame
+            // (without a 16-byte payload, just the WRITE prefix) — it
+            // will either trigger an AUTH flow or a NAK.
+            uint8_t rawCmd[2] = { 0xA0, 0x00 };
+            uint8_t back[16];
+            uint8_t backLen = sizeof(back);
+            uint8_t rr = rawTransceive(rfid, rawCmd, 2, back, &backLen);
+            Serial.print(F("    raw 0xA0 0x00 = "));
+            Serial.print(errName(rr));
+            Serial.print(F("  backLen=")); Serial.println(backLen);
+            if (rr != 0) dumpFailureRegs(rfid);
+        }
+
     } else {
         Serial.println(F("[unknown card type — running GET_VERSION + readPage(0) probe]"));
 
