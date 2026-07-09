@@ -360,10 +360,14 @@ public:
     /**
      * readBlock() — Read 16 bytes from a MIFARE Classic block.
      *
-     * blockAddr — block number (must be authenticated first)
+     * blockAddr — block number (must be authenticated first). The
+     *             function refuses blockAddr past the card's actual
+     *             memory (63 for 1K/Mini, 255 for 4K) so you don't
+     *             accidentally read into OTP / lock / reserved regions.
      * data      — pointer to a 16-byte buffer that receives the data
      *
-     * Returns NIUS_OK on success.
+     * Returns NIUS_OK on success, NIUS_ERR_PARAM on out-of-range address
+     * or non-Classic card.
      */
     uint8_t readBlock(uint8_t blockAddr, uint8_t *data);
 
@@ -372,14 +376,19 @@ public:
      *
      * blockAddr — block number (must be authenticated first)
      * data      — pointer to a 16-byte buffer to write
+     * force     — false (default) refuses writes to block 0 and to
+     *             sector trailers (block 3, 7, 11, ...), because those
+     *             can permanently lock the card if written incorrectly.
+     *             Pass force=true only when you know what you're doing
+     *             (e.g. via setUid() which manages block 0 safely).
      *
-     * Returns NIUS_OK on success.
+     * Returns NIUS_OK on success, NIUS_ERR_PARAM on bounds or
+     * sensitive-block violation.
      *
-     * WARNING: Writing block 0 (manufacturer block) or sector trailers
-     * incorrectly can permanently lock the card. Double-check the data
-     * and block address before calling this function.
+     * WARNING: With force=true, writing block 0 or a sector trailer
+     * incorrectly can permanently lock the card.
      */
-    uint8_t writeBlock(uint8_t blockAddr, uint8_t *data);
+    uint8_t writeBlock(uint8_t blockAddr, uint8_t *data, bool force = false);
 
     /**
      * stopCrypto() — End the MIFARE authentication session.
@@ -390,21 +399,33 @@ public:
 
     /**
      * setUid() — Change the UID of a MIFARE Classic card. Equivalent to
-     * the standard MFRC522 library's `MIFARE_SetUid(newUid, uidSize, true)`.
+     * the standard MFRC522 library's `MIFARE_SetUid(newUid, uidSize, true)`
+     * but with a safety pass that the original lacks.
      *
-     * Authenticates sector 0 with the MIFARE factory key (FFFFFFFFFFFF)
-     * using Key A, then writes a new block 0 to the card. On a Chinese
-     * "CUID" / "DirectWrite" / "Gen2" card the write is accepted through
-     * a backdoor even though block 0 is normally read-only; on a stock
-     * MIFARE Classic card the write is correctly rejected.
+     *   - Dry-run by default (commit = false). The first call prints
+     *     "old UID / new UID / old BCC / new BCC / manufacturer bytes
+     *     preserved" and returns without writing anything. To actually
+     *     perform the write, call again with commit = true.
+     *   - Computes BCC = XOR of all UID bytes (the original library had
+     *     a bug here that bricked several tags).
+     *   - Reads block 0 first and preserves bytes uidSize+1..15 (mfr +
+     *     padding). The original library zeroed these out, which bricks
+     *     some clones.
+     *   - Authenticates sector 0 with the factory key (Key A, falling
+     *     back to Key B).
+     *   - After writing, halts + re-detects and compares the new UID
+     *     against the requested one; returns NIUS_ERR_UNKNOWN if the
+     *     card reports a different UID (which means the write was
+     *     rejected or partially completed).
      *
-     * newUid  — pointer to the new UID bytes (4 bytes for Classic 1K / Mini)
-     * uidSize — number of UID bytes (typically 4)
+     * newUid  — pointer to the new UID bytes (4 bytes for 1K / Mini,
+     *           7 bytes for 4K)
+     * uidSize — number of UID bytes (must be 4 or 7)
+     * commit  — false (default) = preview only; true = actually write
      *
-     * Returns NIUS_OK on success. The caller should re-scan the card with
-     * cardPresent() to see the new UID.
+     * Returns NIUS_OK on success, or one of NIUS_ERR_* otherwise.
      */
-    uint8_t setUid(uint8_t *newUid, uint8_t uidSize);
+    uint8_t setUid(uint8_t *newUid, uint8_t uidSize, bool commit = false);
 
     /**
      * dumpClassic() — Dump every MIFARE Classic block that the supplied

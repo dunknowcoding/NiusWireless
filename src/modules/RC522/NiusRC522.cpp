@@ -314,31 +314,34 @@ void NiusRC522::printInfo(Print &out) {
     out.println(getCardTypeName());
 }
 
-// Internal printer for dumpToSerial — called once per 16-byte block
-// (or once per 4-page Ultralight chunk). State lives in two static
-// counters below; dumpToSerial resets them before each call.
+// Internal printer for dumpToSerial — called ONCE per 16-byte block
+// (or once per 4-page Ultralight chunk). Each call prints exactly one
+// line, labelled with the current _dumpBlk (which dumpToSerial resets
+// before iterating).
+//
+// IMPORTANT: do NOT loop inside this function — earlier revisions printed
+// the same buffer 4 times with consecutive block numbers, which made the
+// dump look like adjacent blocks had been mirrored on the card.
 static uint16_t _dumpBlk = 0;
 
 static void _dumpPrinter(uint8_t *data) {
-    for (uint8_t i = 0; i < 4; i++) {
-        uint8_t b = _dumpBlk;
-        if (b < 100) Serial.print(' ');
-        if (b < 10)  Serial.print(' ');
-        Serial.print(b);
-        Serial.print(F(":  "));
-        for (uint8_t j = 0; j < 16; j++) {
-            if (data[j] < 0x10) Serial.print('0');
-            Serial.print(data[j], HEX);
-            Serial.print(' ');
-        }
-        Serial.print(F(" ["));
-        for (uint8_t j = 0; j < 16; j++) {
-            char c = (data[j] >= 0x20 && data[j] < 0x7F) ? (char)data[j] : '.';
-            Serial.print(c);
-        }
-        Serial.println(']');
-        _dumpBlk++;
+    uint8_t b = _dumpBlk;
+    if (b < 100) Serial.print(' ');
+    if (b < 10)  Serial.print(' ');
+    Serial.print(b);
+    Serial.print(F(":  "));
+    for (uint8_t j = 0; j < 16; j++) {
+        if (data[j] < 0x10) Serial.print('0');
+        Serial.print(data[j], HEX);
+        Serial.print(' ');
     }
+    Serial.print(F(" ["));
+    for (uint8_t j = 0; j < 16; j++) {
+        char c = (data[j] >= 0x20 && data[j] < 0x7F) ? (char)data[j] : '.';
+        Serial.print(c);
+    }
+    Serial.println(']');
+    _dumpBlk++;
 }
 
 uint8_t NiusRC522::dumpToSerial(const uint8_t *key) {
@@ -417,6 +420,20 @@ uint8_t NiusRC522::authenticate(uint8_t blockAddr, uint8_t keyType, uint8_t *key
 }
 
 uint8_t NiusRC522::readBlock(uint8_t blockAddr, uint8_t *data) {
+    // Bounds check — refuse to address past the card's actual memory.
+    // This protects against reading OTP / lock / reserved regions on
+    // larger cards and avoids transceive errors that could wedge the
+    // chip's state on counterfeit boards.
+    if (data == nullptr) { return NIUS_ERR_PARAM; }
+    if (lastCardType == NIUS_CARD_MIFARE_4K) {
+        if (blockAddr > 255) { return NIUS_ERR_PARAM; }
+    } else if (lastCardType == NIUS_CARD_MIFARE_1K ||
+               lastCardType == NIUS_CARD_MIFARE_MINI) {
+        if (blockAddr > 63)  { return NIUS_ERR_PARAM; }
+    } else {
+        return NIUS_ERR_PARAM;  // Not a Classic card — refuse.
+    }
+
     uint8_t cmd[4];
     cmd[0] = MIFARE_CMD_READ;
     cmd[1] = blockAddr;
@@ -440,7 +457,31 @@ uint8_t NiusRC522::readBlock(uint8_t blockAddr, uint8_t *data) {
     return NIUS_OK;
 }
 
-uint8_t NiusRC522::writeBlock(uint8_t blockAddr, uint8_t *data) {
+uint8_t NiusRC522::writeBlock(uint8_t blockAddr, uint8_t *data, bool force) {
+    // ---- Bounds check (same range as readBlock) -----------------------
+    if (data == nullptr) { return NIUS_ERR_PARAM; }
+    if (lastCardType == NIUS_CARD_MIFARE_4K) {
+        if (blockAddr > 255) { return NIUS_ERR_PARAM; }
+    } else if (lastCardType == NIUS_CARD_MIFARE_1K ||
+               lastCardType == NIUS_CARD_MIFARE_MINI) {
+        if (blockAddr > 63)  { return NIUS_ERR_PARAM; }
+    } else {
+        return NIUS_ERR_PARAM;  // Not a Classic card — refuse.
+    }
+
+    // ---- Sensitive-block protection ----------------------------------
+    // Block 0 (manufacturer / UID) and sector trailers (block 3, 7, 11,
+    // ...) can permanently lock the card if written incorrectly. Refuse
+    // them by default; the caller must pass force=true to override.
+    if (!force) {
+        if (blockAddr == 0) {
+            return NIUS_ERR_PARAM;          // Use setUid() for UID writes
+        }
+        if ((blockAddr & 0x03) == 0x03) {
+            return NIUS_ERR_PARAM;          // Sector trailer
+        }
+    }
+
     // Phase 1: send WRITE command + block address
     uint8_t cmd[4];
     cmd[0] = MIFARE_CMD_WRITE;
@@ -488,25 +529,142 @@ void NiusRC522::stopCrypto() {
  * "dump it / change the UID" thing in a single call.
  * ====================================================================== */
 
-uint8_t NiusRC522::setUid(uint8_t *newUid, uint8_t uidSize) {
-    if (!newUid || uidSize == 0 || uidSize > 15) { return NIUS_ERR_PARAM; }
+uint8_t NiusRC522::setUid(uint8_t *newUid, uint8_t uidSize, bool commit) {
+    // ---- Parameter validation -----------------------------------------
+    if (!newUid) { return NIUS_ERR_PARAM; }
+    if (uidSize != 4 && uidSize != 7) {
+        // Only 4-byte (Classic 1K / Mini) and 7-byte (Classic 4K) UIDs
+        // are handled. 10-byte (rare) UIDs are out of scope here.
+        return NIUS_ERR_PARAM;
+    }
 
-    // Build the new block 0:  [UID bytes] [BCC] [12 bytes of zeros]
-    // For a 4-byte UID (MIFARE Classic 1K / Mini) this is the standard layout.
+    // ---- Card-type check ----------------------------------------------
+    if (lastCardType != NIUS_CARD_MIFARE_1K &&
+        lastCardType != NIUS_CARD_MIFARE_MINI &&
+        lastCardType != NIUS_CARD_MIFARE_4K) {
+        return NIUS_ERR_PARAM;
+    }
+
+    // ---- Read current block 0 -----------------------------------------
+    // Block 0 is normally readable without auth on Classic. We back it
+    // up so we can (a) show the user what we're about to overwrite and
+    // (b) preserve the manufacturer bytes and padding (bytes uidSize+1..7).
+    uint8_t origBlock0[16];
+    uint8_t r = readBlock(0, origBlock0);
+    if (r != NIUS_OK) {
+        // A few clones refuse block-0 reads without auth. Try once with
+        // the factory key.
+        uint8_t factoryKey[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        if (authenticate(3, NIUS_KEY_A, factoryKey) != NIUS_OK) {
+            return NIUS_ERR_AUTH;
+        }
+        r = readBlock(0, origBlock0);
+        stopCrypto();
+        if (r != NIUS_OK) { return r; }
+    }
+
+    // ---- Build the new block 0 ----------------------------------------
+    uint8_t newBlock0[16];
+    memcpy(newBlock0, origBlock0, 16);          // start from current
+    memcpy(newBlock0, newUid,    uidSize);      // overwrite UID bytes
+
+    // BCC = XOR of all UID bytes. THIS MUST BE CORRECT — a wrong BCC is
+    // what bricked the coil tag.
+    uint8_t bcc = 0;
+    for (uint8_t i = 0; i < uidSize; i++) { bcc ^= newUid[i]; }
+    newBlock0[uidSize] = bcc;
+    // Bytes uidSize+1..15 stay as the original (manufacturer + padding) —
+    // we do NOT zero them out, because some clones reject the write when
+    // bytes 8..15 of block 0 are all zero, and on non-CUID cards the
+    // padding bytes are meaningful to the card's internal lock state.
+
+    // ---- Dry-run preview ----------------------------------------------
+    Serial.println(F("--- setUid preview ---"));
+    Serial.print  (F("  Card:      "));   Serial.println(getCardTypeName());
+
+    Serial.print  (F("  Old UID:   "));
+    for (uint8_t i = 0; i < uidSize; i++) {
+        if (origBlock0[i] < 0x10) Serial.print('0');
+        Serial.print(origBlock0[i], HEX);
+    }
+    Serial.println();
+
+    Serial.print  (F("  New UID:   "));
+    for (uint8_t i = 0; i < uidSize; i++) {
+        if (newUid[i] < 0x10) Serial.print('0');
+        Serial.print(newUid[i], HEX);
+    }
+    Serial.println();
+
+    Serial.print  (F("  Old BCC:   0x"));
+    if (origBlock0[uidSize] < 0x10) Serial.print('0');
+    Serial.print(origBlock0[uidSize], HEX); Serial.println();
+
+    Serial.print  (F("  New BCC:   0x"));
+    if (bcc < 0x10) Serial.print('0');
+    Serial.print(bcc, HEX); Serial.println();
+
+    Serial.print  (F("  Mfr bytes: "));
+    for (uint8_t i = uidSize + 1; i <= 7; i++) {
+        if (origBlock0[i] < 0x10) Serial.print('0');
+        Serial.print(origBlock0[i], HEX);
+        if (i < 7) Serial.print(' ');
+    }
+    Serial.println(F("  (preserved from original)"));
+
+    if (!commit) {
+        Serial.println(F("  DRY-RUN: pass commit=true to actually write."));
+        return NIUS_OK;
+    }
+
+    // ---- Authenticate sector 0 ---------------------------------------
+    // CUID cards accept either Key A or Key B at sector 0's trailer;
+    // we try A first, then B as a fallback.
     uint8_t factoryKey[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    uint8_t block0[16] = {0};
-    memcpy(block0, newUid, uidSize);
-    for (uint8_t i = 0; i < uidSize; i++) { block0[uidSize] ^= newUid[i]; }  // BCC
-    // Bytes uidSize+1..15 left at 0 (manufacturer data — CUID cards accept zeros)
-
     if (authenticate(3, NIUS_KEY_A, factoryKey) != NIUS_OK) {
         if (authenticate(3, NIUS_KEY_B, factoryKey) != NIUS_OK) {
+            Serial.println(F("  ERROR: Sector 0 auth failed."));
             return NIUS_ERR_AUTH;
         }
     }
-    uint8_t r = writeBlock(0, block0);
+
+    // ---- Write block 0 (force=true to bypass the sensitive-block guard
+    //      inside writeBlock — we are the safe path). -------------------
+    r = writeBlock(0, newBlock0, true);
     stopCrypto();
-    return r;
+    if (r != NIUS_OK) {
+        Serial.println(F("  ERROR: writeBlock failed."));
+        return r;
+    }
+
+    // ---- Verify by re-detecting --------------------------------------
+    // The UID has changed, so the card looks "new" — halt and re-scan.
+    halt();
+    if (!cardPresent()) {
+        Serial.println(F("  ERROR: Card not re-detected after UID write."));
+        return NIUS_ERR_UNKNOWN;
+    }
+    bool uidMatches = (uidLen == uidSize);
+    for (uint8_t i = 0; i < uidSize && uidMatches; i++) {
+        if (uid[i] != newUid[i]) { uidMatches = false; }
+    }
+    if (!uidMatches) {
+        Serial.print(F("  ERROR: UID mismatch after write. Expected "));
+        for (uint8_t i = 0; i < uidSize; i++) {
+            if (newUid[i] < 0x10) Serial.print('0');
+            Serial.print(newUid[i], HEX);
+        }
+        Serial.print(F(", got "));
+        for (uint8_t i = 0; i < uidLen; i++) {
+            if (uid[i] < 0x10) Serial.print('0');
+            Serial.print(uid[i], HEX);
+        }
+        Serial.println();
+        return NIUS_ERR_UNKNOWN;
+    }
+
+    Serial.println(F("  OK: UID changed and verified."));
+    return NIUS_OK;
 }
 
 uint8_t NiusRC522::dumpClassic(uint8_t *key, void (*printer)(uint8_t *)) {
@@ -525,13 +683,24 @@ uint8_t NiusRC522::dumpClassic(uint8_t *key, void (*printer)(uint8_t *)) {
             }
         }
         stopCrypto();
+        // Reset the card-side auth state before the next sector. On
+        // counterfeit MFRC522 boards (FM17522 clones etc.) the second
+        // and later authentications can fail silently without this
+        // HALT + WUPA + SELECT cycle. If the card has actually left
+        // the field we bail out cleanly instead of looping.
+        halt();
+        if (!cardPresentWake()) { break; }
     }
     return okSectors;
 }
 
 uint8_t NiusRC522::dumpUltralight(void (*printer)(uint8_t *)) {
+    // NTAG216 has 231 pages — the older `p < 64` bound silently truncated
+    // dumps. We just stop on the first NAK; the bound here is only a safety
+    // cap to keep us from looping forever on a misbehaving card.
+    const uint8_t PAGE_CAP = 240;
     uint8_t pages = 0;
-    for (uint8_t p = 0; p < 64; p += 4) {
+    for (uint8_t p = 0; p < PAGE_CAP; p += 4) {
         uint8_t buf[16];
         if (readPage(p, buf) != NIUS_OK) { break; }
         pages += 4;
