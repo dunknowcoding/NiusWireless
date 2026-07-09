@@ -244,6 +244,33 @@ public:
     void halt();
 
     /* -------------------------------------------------------------------
+     * Convenience
+     * ------------------------------------------------------------------ */
+
+    /**
+     * printInfo() — Print UID / ATQA / SAK / type-name of the
+     * last detected card to `out` (default: Serial).
+     * One-call replacement for printing each getter individually.
+     */
+    void printInfo(Print &out = Serial);
+
+    /**
+     * dumpToSerial() — Type-adaptive memory dump. Reads the entire
+     * user-accessible memory of the last detected card and prints it
+     * block-by-block (or 4-page groups for Ultralight / NTAG) to the
+     * Serial Monitor.
+     *
+     *   MIFARE Classic 1K / 4K / Mini  -> dumpClassic() with `key`
+     *   MIFARE Ultralight / NTAG      -> dumpUltralight()
+     *   Other types                    -> "not supported for this family"
+     *
+     * For Classic, `key` may be `nullptr` to use NIUS_KEY_DEFAULT.
+     *
+     * Returns the number of sectors (Classic) or pages (Ultralight) read.
+     */
+    uint8_t dumpToSerial(const uint8_t *key = nullptr);
+
+    /* -------------------------------------------------------------------
      * MIFARE Classic operations
      * Authenticate before calling readBlock() / writeBlock().
      * ------------------------------------------------------------------ */

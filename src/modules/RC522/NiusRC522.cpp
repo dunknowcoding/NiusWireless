@@ -264,6 +264,67 @@ uint8_t NiusRC522::getSAK() {
     return sak;
 }
 
+/* =======================================================================
+ * Convenience wrappers
+ * ====================================================================== */
+
+void NiusRC522::printInfo(Print &out) {
+    out.print(F("  UID:   "));
+    out.println(getUID());
+    out.print(F("  ATQA:  "));
+    out.println(getATQA());
+    out.print(F("  SAK:   0x"));
+    if (sak < 0x10) out.print('0');
+    out.print(sak, HEX);
+    out.println();
+    out.print(F("  Type:  "));
+    out.println(getCardTypeName());
+}
+
+// Internal printer for dumpToSerial — called once per 16-byte block
+// (or once per 4-page Ultralight chunk). State lives in two static
+// counters below; dumpToSerial resets them before each call.
+static uint16_t _dumpBlk = 0;
+
+static void _dumpPrinter(uint8_t *data) {
+    for (uint8_t i = 0; i < 4; i++) {
+        uint8_t b = _dumpBlk;
+        if (b < 100) Serial.print(' ');
+        if (b < 10)  Serial.print(' ');
+        Serial.print(b);
+        Serial.print(F(":  "));
+        for (uint8_t j = 0; j < 16; j++) {
+            if (data[j] < 0x10) Serial.print('0');
+            Serial.print(data[j], HEX);
+            Serial.print(' ');
+        }
+        Serial.print(F(" ["));
+        for (uint8_t j = 0; j < 16; j++) {
+            char c = (data[j] >= 0x20 && data[j] < 0x7F) ? (char)data[j] : '.';
+            Serial.print(c);
+        }
+        Serial.println(']');
+        _dumpBlk++;
+    }
+}
+
+uint8_t NiusRC522::dumpToSerial(const uint8_t *key) {
+    _dumpBlk = 0;
+    switch (lastCardType) {
+        case NIUS_CARD_MIFARE_1K:
+        case NIUS_CARD_MIFARE_4K:
+        case NIUS_CARD_MIFARE_MINI: {
+            const uint8_t *k = key ? key : NIUS_KEY_DEFAULT;
+            return dumpClassic((uint8_t *)k, _dumpPrinter);
+        }
+        case NIUS_CARD_MIFARE_UL:
+            return dumpUltralight(_dumpPrinter);
+        default:
+            Serial.println(F("(dumpToSerial: this card family is not supported)"));
+            return 0;
+    }
+}
+
 uint8_t NiusRC522::getNTAGVersion(uint8_t *version) {
     // GET_VERSION (0x60) for NTAG / MIFARE Ultralight EV1.
     // Command: 0x60 + 2 CRC bytes. Response: 8 version bytes + 2 CRC.

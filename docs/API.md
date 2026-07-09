@@ -13,10 +13,12 @@ Version 1.0.0
 5. [NiusNRF24L01 — NRF24L01+ 2.4 GHz Radio](#niusnrf24l01--nrf24l01-24-ghz-radio)
 6. [NiusHC12 — HC-12 Long-Range Serial](#niushc12--hc-12-long-range-serial)
 7. [NiusHC06 — HC-06 / HC-05 Bluetooth SPP](#niushc06--hc-06--hc-05-bluetooth-spp)
-8. [NiusPN532 — PN532 NFC/RFID](#niuspn532--pn532-nfcrfid)
+8. [NiusPN532 — PN532 NFC/RFID](#niuspn532--nfcrfid)
 9. [Return Codes](#return-codes)
 10. [Card Type Constants](#card-type-constants)
 11. [Wiring Quick-Reference](#wiring-quick-reference)
+
+> **Tip** — the headings below scale from "I just want to detect a card" → "I want to read/write blocks" → "I want to write raw protocol". If you only need the first level, skip ahead to [Quick start](#rc522-quick-start) and stop reading after [Common helpers](#rc522-common-helpers).
 
 ---
 
@@ -107,6 +109,42 @@ Return a human-readable version string, e.g. `"MFRC522 v2.0"`.
 **Header:** `src/modules/RC522/NiusRC522.h`  
 **Status:** Full implementation  
 **Protocol:** SPI (Mode 0, MSB first, max 10 MHz)
+
+---
+
+### <a id="rc522-quick-start"></a>Quick start
+
+```cpp
+#include <NiusWireless.h>
+
+NiusRC522 rfid(SDA, 10, SCL, 11, 12);   // 5 software-SPI pins (see constructors)
+
+void setup() {
+    Serial.begin(9600);
+    rfid.begin();
+}
+
+void loop() {
+    if (!rfid.cardPresentWake()) return;   // find + select a tag
+    rfid.printInfo();                        // UID / ATQA / SAK / Type
+    rfid.dumpToSerial();                     // type-adaptive: classic or UL
+    rfid.halt();
+}
+```
+
+If you only need the UID and a recommended example for the card family, that loop is the whole sketch.
+
+#### Examples shipped with the library
+
+| Sketch | Size | Use it for |
+|--------|------|------------|
+| `examples/rc522_basic` | 30 lines | Just detect a tag — UID / ATQA / SAK / type. Closest to a "hello world". |
+| `examples/rc522_adv` | 50 lines | One-shot dump + Classic block-0 roundtrip + register inspection. |
+| `examples/rc522_s50` | 60 lines | Tightly focused MIFARE Classic 1K write/read/restore demo. |
+| `examples/rc522_tag` | 70 lines | Type-adaptive: Classic dump / UL dump / CUID UID-change demo. |
+| `examples/rc522_diag` | 540 lines | Field diagnostic — register dump, failure-IRQ decoding, recovery probes for bricked cards. |
+
+The first four are user-facing. `rc522_diag` is a tooling sketch for when you need to understand *why* a card isn't responding (firmware-vs-card diagnosis).
 
 ---
 
@@ -312,6 +350,58 @@ Also clears the MFRC522 crypto1 engine.  Call this after finishing with a card.
 
 ---
 
+### <a id="rc522-common-helpers"></a>Common helpers
+
+These two methods collapse the typical "log a card dump" workflow to a single call.
+
+#### `printInfo()`
+
+```cpp
+void printInfo(Print &out = Serial);
+```
+
+Print `UID` / `ATQA` / `SAK` / type-name of the last detected card to the given
+stream. Equivalent to calling the getters and printing each one manually:
+
+```cpp
+out.print(F("  UID:   ")); out.println(getUID());
+out.print(F("  ATQA:  ")); out.println(getATQA());
+out.print(F("  SAK:   0x")); out.println(getSAK(), HEX);
+out.print(F("  Type:  ")); out.println(getCardTypeName());
+```
+
+#### `dumpToSerial()`
+
+```cpp
+uint8_t dumpToSerial(const uint8_t *key = nullptr);
+```
+
+Type-adaptive memory dump to the Serial Monitor.
+
+| Card family   | Path used                                         |
+|---------------|---------------------------------------------------|
+| Classic 1K/4K/Mini | `dumpClassic(key ? key : NIUS_KEY_DEFAULT, printer)` |
+| Ultralight / NTAG | `dumpUltralight(printer)`                            |
+| Anything else     | prints `"not supported for this family"` and returns `0` |
+
+Output format matches `MIFARE_DumpToSerial` from the standard library:
+
+```
+  0:  04 D9 F3 44 4B 80 44 00  00 00 00 00 00 00 00 00  [.........D K..D........]
+  1:  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  [................]
+  ...
+```
+
+Returns the number of sectors (Classic) or pages (Ultralight) successfully read.
+
+**Pre-built constants:**
+
+```cpp
+extern const uint8_t NIUS_KEY_DEFAULT[6];   // {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}
+```
+
+---
+
 ### `authenticate()`
 
 ```cpp
@@ -331,6 +421,44 @@ Must be called before `readBlock()` or `writeBlock()`.
 
 **Default factory key:** `{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}`  
 A global constant `NIUS_KEY_DEFAULT[6]` is provided.
+
+---
+
+### `dumpClassic()`
+
+```cpp
+uint8_t dumpClassic(uint8_t *key, void (*printer)(uint8_t *))
+```
+
+Dump every block on a MIFARE Classic card whose sector authenticates with
+`key`. The callback `printer` is invoked once per 16-byte block (4 blocks per
+sector). Pass `nullptr` for `printer` to skip printing and just return the
+count.
+
+**Returns:** number of sectors that authenticated successfully.
+
+For most cards, `dumpToSerial()` is more convenient — it picks the right
+`dumpClassic` invocation for you.
+
+---
+
+### `setUid()`
+
+```cpp
+uint8_t setUid(uint8_t *newUid, uint8_t uidSize)
+```
+
+Rewrite block 0 of a MIFARE Classic card with a new UID. Authenticates sector
+0 with `NIUS_KEY_DEFAULT` (Key A), then writes the new block 0. On a **Chinese
+magic card** (CUID / DirectWrite / FUID / Gen2) the write is accepted via a
+backdoor; on a stock MIFARE Classic card the write is correctly rejected.
+
+| Parameter | Description |
+|-----------|-------------|
+| `newUid`  | Pointer to the new UID bytes (4 bytes for 1K / Mini) |
+| `uidSize` | Number of UID bytes (typically 4) |
+
+**Returns:** `NIUS_OK` on success.
 
 ---
 
@@ -411,6 +539,20 @@ returns pages 4-7, etc.  It stops on the first NAK (out of memory).
 
 These methods do **not** work on MIFARE Classic cards (which need the
 `readBlock` / `writeBlock` flow with Key A or Key B authentication).
+
+---
+
+### `dumpUltralight()`
+
+```cpp
+uint8_t dumpUltralight(void (*printer)(uint8_t *))
+```
+
+Dump every page of a MIFARE Ultralight / NTAG card that responds. The
+callback `printer` is invoked once per 4-page chunk (16 bytes). Stops on
+the first NAK. Pass `nullptr` to skip printing.
+
+**Returns:** the number of pages successfully read.
 
 ---
 

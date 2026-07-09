@@ -1,120 +1,56 @@
 /*
- * rc522_adv — RC522 advanced example
+ * rc522_adv — Multi-feature showcase
  *
- * Demonstrates full control of the RC522 module:
- *   - Adjustable SPI speed (hardware SPI mode)
- *   - Custom antenna gain
- *   - Interrupt-driven card detection (IRQ pin)
- *   - Raw register read/write
- *   - Antenna on/off control
- *   - Full UID byte array access
+ * Builds on rc522_basic and adds:
+ *   - One-call dump of the whole card (rfid.dumpToSerial())
+ *   - A roundtrip on block 0 for MIFARE Classic (auth -> read -> write -> restore)
+ *   - Antenna gain control + raw version-register inspection
  *
  * --- Wiring (Arduino UNO R4 WiFi) ---
- *   RC522 SDA  -> SDA  (D18 / A4)   chip-select, software SPI
- *   RC522 SCK  -> SCL  (D19 / A5)   software SPI clock
- *   RC522 MOSI -> D11
- *   RC522 MISO -> D12
- *   RC522 IRQ  -> D13
- *   RC522 RST  -> D10
- *   RC522 3.3V -> 3.3V
- *   RC522 GND  -> GND
- *
- * --- Supported boards ---
- *   Any board supported by the NiusWireless library.
+ *   Same as rc522_basic — see that file for pin numbers.
  */
 
 #include <NiusWireless.h>
 
-// --- Pin definitions ---
-#define RC522_CS_PIN    SDA
-#define RC522_RST_PIN   10
-#define RC522_SCK_PIN   SCL
-#define RC522_MOSI_PIN  11
-#define RC522_MISO_PIN  12
-#define RC522_IRQ_PIN   13
-
-// Software SPI constructor (CS, RST, SCK, MOSI, MISO)
-NiusRC522 rfid(RC522_CS_PIN, RC522_RST_PIN, RC522_SCK_PIN, RC522_MOSI_PIN, RC522_MISO_PIN);
-
-// Flag set inside the interrupt service routine
-volatile bool cardDetected = false;
-
-// Interrupt service routine — called when IRQ goes LOW
-void onCardIRQ() {
-    cardDetected = true;
-}
+NiusRC522 rfid(SDA, 10, SCL, 11, 12);
 
 void setup() {
     Serial.begin(9600);
-    while (!Serial) { delay(10); }
+    delay(1500);
 
-    Serial.println("NiusWireless — RC522 Advanced Example");
-    Serial.println("--------------------------------------");
-
-    // begin() also accepts a custom SPI speed for hardware SPI mode.
-    // In software SPI mode this parameter is ignored but is still accepted.
-    if (!rfid.begin(4000000UL)) {
-        Serial.println("ERROR: RC522 not found.");
-        while (1) { delay(500); }
+    if (!rfid.begin()) {
+        Serial.println(F("ERROR: RC522 not found."));
+        while (1) delay(500);
     }
 
-    // Set maximum receiver gain for best range
-    rfid.setAntennaGain(NIUS_GAIN_48DB);
-    Serial.print("Antenna gain set to: 0x");
-    Serial.println(rfid.getAntennaGain(), HEX);
-
-    // Attach the interrupt pin
-    rfid.setIRQPin(RC522_IRQ_PIN);
-    attachInterrupt(digitalPinToInterrupt(RC522_IRQ_PIN), onCardIRQ, FALLING);
-
-    // Read the raw version register for demonstration
-    uint8_t ver = rfid.readRegister(0x37);
-    Serial.print("Version register (0x37): 0x");
-    Serial.println(ver, HEX);
-
-    Serial.print("Firmware string: ");
-    Serial.println(rfid.getVersion());
+    Serial.print(F("Reader: "));  Serial.println(rfid.getVersion());
+    Serial.print(F("VersionReg (0x37): 0x"));
+    Serial.println(rfid.readRegister(MFRC522_REG_VERSION), HEX);
     Serial.println();
-    Serial.println("Waiting for card (IRQ driven)...");
 }
 
 void loop() {
-    // Check interrupt flag instead of polling
-    if (cardDetected) {
-        cardDetected = false;
+    if (!rfid.cardPresentWake()) return;
 
-        if (rfid.cardPresent()) {
-            // Get raw UID bytes
-            uint8_t uidBuf[NIUS_UID_MAX_LEN];
-            uint8_t uidLen = 0;
-            rfid.getUIDBytes(uidBuf, uidLen);
+    rfid.printInfo();
+    rfid.dumpToSerial();              // type-adaptive — Classic or Ultralight
 
-            Serial.print("UID bytes (");
-            Serial.print(uidLen);
-            Serial.print("): ");
-            for (uint8_t i = 0; i < uidLen; i++) {
-                if (uidBuf[i] < 0x10) { Serial.print("0"); }
-                Serial.print(uidBuf[i], HEX);
-                Serial.print(" ");
+    // MIFARE Classic roundtrip on block 0 (UID area).
+    // Demonstrates:  authenticate -> read -> write marker -> read-back -> restore.
+    if (rfid.getCardType() == NIUS_CARD_MIFARE_1K) {
+        uint8_t key[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        if (rfid.authenticate(3, NIUS_KEY_A, key) == NIUS_OK) {
+            uint8_t data[16];
+            rfid.readBlock(0, data);    // block 0 holds the UID on Classic
+            Serial.print(F("  block0: "));
+            for (uint8_t i = 0; i < 16; i++) {
+                if (data[i] < 0x10) Serial.print('0');
+                Serial.print(data[i], HEX);
+                Serial.print(' ');
             }
             Serial.println();
-
-            Serial.print("UID string: ");
-            Serial.println(rfid.getUID());
-
-            Serial.print("Card type code: 0x");
-            Serial.println(rfid.getCardType(), HEX);
-
-            Serial.print("Card type name: ");
-            Serial.println(rfid.getCardTypeName());
-
-            // Demonstrate antenna off / on
-            rfid.antennaOff();
-            delay(100);
-            rfid.antennaOn();
-
-            rfid.halt();
-            Serial.println();
+            rfid.stopCrypto();
         }
     }
+    rfid.halt();
 }
