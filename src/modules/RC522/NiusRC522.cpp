@@ -138,6 +138,15 @@ void NiusRC522::reset() {
         delay(10);
         count++;
     }
+    // After SOFT_RESET most config registers revert to power-on defaults
+    // (timer at 0x00/0x00/0x0000 ⇒ microsecond timeouts). Re-apply the
+    // same init begin() uses so reset() is functionally a fresh start.
+    writeRegister(MFRC522_REG_T_MODE,      0x80); // TAuto=1
+    writeRegister(MFRC522_REG_T_PRESCALER, 0xA9);
+    writeRegister(MFRC522_REG_T_RELOAD_H,  0x03);
+    writeRegister(MFRC522_REG_T_RELOAD_L,  0xE8);
+    writeRegister(MFRC522_REG_TX_ASK, 0x40);
+    writeRegister(MFRC522_REG_MODE, 0x3D);
     antennaOn();
 }
 
