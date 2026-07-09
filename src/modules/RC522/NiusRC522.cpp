@@ -27,6 +27,9 @@ NiusRC522::NiusRC522(uint8_t csPin, uint8_t rstPin) {
     _irqPin   = 0xFF;  // 0xFF = not assigned
     _softSPI  = false;
     _spiSpeed = 4000000UL;
+    _useI2C   = false;
+    _i2c      = nullptr;
+    _i2cAddress = 0;
     _ready    = false;
     uidLen    = 0;
     lastCardType    = NIUS_CARD_UNKNOWN;
@@ -45,6 +48,29 @@ NiusRC522::NiusRC522(uint8_t csPin, uint8_t rstPin,
     _irqPin   = 0xFF;
     _softSPI  = true;
     _spiSpeed = 0;
+    _useI2C   = false;
+    _i2c      = nullptr;
+    _i2cAddress = 0;
+    _ready    = false;
+    uidLen    = 0;
+    lastCardType    = NIUS_CARD_UNKNOWN;
+    lastError       = NIUS_OK;
+    lastSelectError = 0xFF;
+    memset(uid, 0, sizeof(uid));
+}
+
+NiusRC522::NiusRC522(TwoWire &bus, uint8_t i2cAddress, uint8_t rstPin) {
+    _csPin    = 0;
+    _rstPin   = rstPin;
+    _sckPin   = 0;
+    _mosiPin  = 0;
+    _misoPin  = 0;
+    _irqPin   = 0xFF;
+    _softSPI  = false;     // unused on I2C path
+    _spiSpeed = 0;        // unused on I2C path
+    _useI2C   = true;
+    _i2c      = &bus;
+    _i2cAddress = i2cAddress;
     _ready    = false;
     uidLen    = 0;
     lastCardType    = NIUS_CARD_UNKNOWN;
@@ -65,20 +91,27 @@ bool NiusRC522::begin(uint32_t spiSpeed) {
     _spiSpeed = spiSpeed;
 
     /* ---- GPIO setup -------------------------------------------------- */
-    pinMode(_csPin, OUTPUT);
-    digitalWrite(_csPin, HIGH);
+    if (!_useI2C) {
+        pinMode(_csPin, OUTPUT);
+        digitalWrite(_csPin, HIGH);
+    }
 
     pinMode(_rstPin, OUTPUT);
     digitalWrite(_rstPin, LOW);
 
-    if (_softSPI) {
-        pinMode(_sckPin, OUTPUT);
-        digitalWrite(_sckPin, LOW);
-        pinMode(_mosiPin, OUTPUT);
-        digitalWrite(_mosiPin, LOW);
-        pinMode(_misoPin, INPUT);
+    if (!_useI2C) {
+        if (_softSPI) {
+            pinMode(_sckPin, OUTPUT);
+            digitalWrite(_sckPin, LOW);
+            pinMode(_mosiPin, OUTPUT);
+            digitalWrite(_mosiPin, LOW);
+            pinMode(_misoPin, INPUT);
+        } else {
+            SPI.begin();
+        }
     } else {
-        SPI.begin();
+        _i2c->begin();
+        _i2c->setClock(400000UL);   // 400 kHz Fast mode; MFRC522 supports up to 400 kHz
     }
 
     /* ---- Hardware reset ---------------------------------------------- */
@@ -615,6 +648,17 @@ void NiusRC522::setIRQPin(uint8_t irqPin) {
  * ====================================================================== */
 
 uint8_t NiusRC522::readRegister(uint8_t addr) {
+    if (_useI2C) {
+        // MFRC522 I2C frame: write register byte, repeated-START, read N
+        uint8_t addrByte = 0x80 | ((addr << 1) & 0x7E);
+        _i2c->beginTransmission(_i2cAddress);
+        _i2c->write(addrByte);   // write register address
+        _i2c->endTransmission(false);  // repeated start
+        _i2c->requestFrom((int)_i2cAddress, 1, (int)true);
+        uint8_t val = (uint8_t)0x00;
+        if (_i2c->available()) { val = _i2c->read(); }
+        return val;
+    }
     uint8_t val;
     csLow();
     spiTransfer(0x80 | ((addr << 1) & 0x7E));
@@ -624,6 +668,14 @@ uint8_t NiusRC522::readRegister(uint8_t addr) {
 }
 
 void NiusRC522::writeRegister(uint8_t addr, uint8_t value) {
+    if (_useI2C) {
+        uint8_t addrByte = (addr << 1) & 0x7E;
+        _i2c->beginTransmission(_i2cAddress);
+        _i2c->write(addrByte);
+        _i2c->write(value);
+        _i2c->endTransmission(true);
+        return;
+    }
     csLow();
     spiTransfer((addr << 1) & 0x7E);
     spiTransfer(value);
@@ -757,6 +809,20 @@ uint8_t NiusRC522::softTransfer(uint8_t data) {
 void NiusRC522::readRegisterBurst(uint8_t addr, uint8_t count,
                                    uint8_t *values, uint8_t rxAlign) {
     if (count == 0) { return; }
+    if (_useI2C) {
+        // I2C has no sub-byte alignment; rxAlign is ignored for I2C.
+        (void)rxAlign;
+        uint8_t addrByte = 0x80 | ((addr << 1) & 0x7E);
+        _i2c->beginTransmission(_i2cAddress);
+        _i2c->write(addrByte);
+        _i2c->endTransmission(false);                // repeated START
+        _i2c->requestFrom((int)_i2cAddress, (int)count, (int)true);
+        for (uint8_t i = 0; i < count && _i2c->available(); i++) {
+            values[i] = (uint8_t)_i2c->read();
+        }
+        return;
+    }
+
     uint8_t addrByte = 0x80 | ((addr << 1) & 0x7E);
     uint8_t index = 0;
     count--;
@@ -779,6 +845,14 @@ void NiusRC522::readRegisterBurst(uint8_t addr, uint8_t count,
 }
 
 void NiusRC522::writeRegisterBurst(uint8_t addr, uint8_t count, uint8_t *values) {
+    if (_useI2C) {
+        uint8_t addrByte = (addr << 1) & 0x7E;
+        _i2c->beginTransmission(_i2cAddress);
+        _i2c->write(addrByte);
+        for (uint8_t i = 0; i < count; i++) { _i2c->write(values[i]); }
+        _i2c->endTransmission(true);
+        return;
+    }
     csLow();
     spiTransfer((addr << 1) & 0x7E);
     for (uint8_t i = 0; i < count; i++) { spiTransfer(values[i]); }

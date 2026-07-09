@@ -1,17 +1,17 @@
 /*
- * rc522_tag — Type-adaptive tag operations
+ * rc522_tag - Type-adaptive tag operations
  *
  * Detects a card, dispatches to the right flow for its family, and
  * uses the high-level helpers so the loop body stays small:
  *
- *   MIFARE Classic 1K / 4K / Mini / CUID — authenticate + dump every
+ *   MIFARE Classic 1K / 4K / Mini / CUID - authenticate + dump every
  *       block with the factory key, optionally change the UID on
  *       Chinese "magic" cards (setUid).
  *
- *   MIFARE Ultralight / NTAG — dump every page that responds,
+ *   MIFARE Ultralight / NTAG - dump every page that responds,
  *       print the chip version if it's an EV1 / NTAG.
  *
- *   ISO 14443-4 / DESFire / Plus / ISO 18092 / unknown — print
+ *   ISO 14443-4 / DESFire / Plus / ISO 18092 / unknown - print
  *       a one-liner recommending a different tool.
  *
  * --- Wiring (Arduino UNO R4 WiFi) ---
@@ -26,7 +26,7 @@ void flow_Classic() {
     Serial.println();
     rfid.dumpToSerial();
 
-    // Optional: try changing the UID +1 — accepted only on Chinese
+    // Optional: try changing the UID +1 - accepted only on Chinese
     // "magic" cards (CUID / DirectWrite / FUID). Stock MIFARE Classic
     // cards keep their original UID.
     if (rfid.uidLen == 4) {
@@ -55,7 +55,7 @@ void flow_Ultralight() {
 }
 
 void flow_Unsupported() {
-    Serial.println(F("Card type not supported by NiusWireless — try PN532 or a phone app."));
+    Serial.println(F("Card type not supported by NiusWireless - try PN532 or a phone app."));
 }
 
 void setup() {

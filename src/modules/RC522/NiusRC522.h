@@ -1,8 +1,10 @@
 /*
  * NiusRC522.h — RFID-RC522 (MFRC522) module driver
  *
- * Supports both hardware SPI and software (bit-bang) SPI.
- * The RC522 module uses SPI Mode 0 (CPOL=0, CPHA=0), MSB first.
+ * Supports hardware SPI, software (bit-bang) SPI, and I2C transports.
+ * - SPI mode uses Mode 0 (CPOL=0, CPHA=0), MSB first.
+ * - I2C mode uses the chip's I2C bus. MFRC522 default address is 0x28;
+ *   some boards pull I2C_ADD0 HIGH for 0x29.
  *
  * --- Constructors ---
  *
@@ -12,8 +14,11 @@
  *   // Software SPI (any GPIO pins; required for the reference wiring below)
  *   NiusRC522 rfid(csPin, rstPin, sckPin, mosiPin, misoPin);
  *
+ *   // I2C (uses board's default Wire bus)
+ *   NiusRC522 rfid(Wire, 0x28, rstPin);  // Wire ref + 7-bit I2C address + RST
+ *
  * --- Reference wiring (Arduino UNO R4 WiFi) ---
- *   RC522 SDA  → A4 / SDA  (chip-select)
+ *   RC522 SDA  → A4 / SDA  (chip-select in SPI mode)
  *   RC522 SCK  → A5 / SCL  (software SPI clock)
  *   RC522 MOSI → D11
  *   RC522 MISO → D12
@@ -21,6 +26,8 @@
  *   RC522 RST  → D10
  *   RC522 3.3V → 3.3V
  *   RC522 GND  → GND
+ *
+ *   For I2C, the chip's I2C_SDA / I2C_SCL pins go to the board's Wire SDA/SCL.
  *
  * --- Supported boards ---
  *   AVR (UNO, Mega, Nano), SAMD (Zero, MKR), ESP32, ESP8266,
@@ -33,6 +40,7 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <Wire.h>
 #include "../../NiusBase.h"
 #include "NiusMFRC522_Reg.h"
 
@@ -111,6 +119,21 @@ public:
      */
     NiusRC522(uint8_t csPin, uint8_t rstPin,
               uint8_t sckPin, uint8_t mosiPin, uint8_t misoPin);
+
+    /**
+     * I2C constructor.
+     *
+     * Uses the MFRC522 chip's I2C bus via the supplied TwoWire reference
+     * (typically `Wire`). The board's SDA / SCL pins must be wired to
+     * the chip's I2C_SDA / I2C_SCL pins.
+     *
+     * The MFRC522 datasheet's default I2C address is 0x28 (I2C_ADD0 LOW)
+     * or 0x29 (I2C_ADD0 HIGH, depending on the board wiring). Pass the
+     * 7-bit address — Wire handles the R/W bit.
+     *
+     * `rstPin` is the chip's hardware reset pin (RC522 RST).
+     */
+    NiusRC522(TwoWire &bus, uint8_t i2cAddress, uint8_t rstPin);
 
     /* -------------------------------------------------------------------
      * NiusBase interface
@@ -558,6 +581,11 @@ private:
     bool     _softSPI;
     uint32_t _spiSpeed;
     bool     _ready;
+
+    /* --- I2C transport ------------------------------------------------ */
+    bool     _useI2C;       // true when constructed with the I2C ctor
+    TwoWire *_i2c;          // Wire (or Wire1 / Wire2) the chip is on
+    uint8_t  _i2cAddress;    // 7-bit address
 
     /* --- Low-level SPI helpers ---------------------------------------- */
     void    csLow();

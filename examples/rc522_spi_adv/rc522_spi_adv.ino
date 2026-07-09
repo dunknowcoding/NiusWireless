@@ -1,13 +1,13 @@
 /*
- * rc522_adv — Multi-feature showcase
+ * rc522_spi_adv - Multi-feature showcase (software SPI).
  *
- * Builds on rc522_basic and adds:
+ * Builds on rc522_spi_basic and adds:
  *   - One-call dump of the whole card (rfid.dumpToSerial())
- *   - A roundtrip on block 0 for MIFARE Classic (auth -> read -> write -> restore)
+ *   - A roundtrip on block 0 for MIFARE Classic (auth, read, write, restore)
  *   - Antenna gain control + raw version-register inspection
  *
  * --- Wiring (Arduino UNO R4 WiFi) ---
- *   Same as rc522_basic — see that file for pin numbers.
+ *   Same as rc522_spi_basic - see that file for pin numbers.
  */
 
 #include <NiusWireless.h>
@@ -33,10 +33,10 @@ void loop() {
     if (!rfid.cardPresentWake()) return;
 
     rfid.printInfo();
-    rfid.dumpToSerial();              // type-adaptive — Classic or Ultralight
+    rfid.dumpToSerial();              // type-adaptive: Classic or Ultralight
 
     // MIFARE Classic roundtrip on block 0 (UID area).
-    // Demonstrates:  authenticate -> read -> write marker -> read-back -> restore.
+    // Demonstrates: authenticate, read, write marker, read back, restore.
     if (rfid.getCardType() == NIUS_CARD_MIFARE_1K) {
         uint8_t key[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
         if (rfid.authenticate(3, NIUS_KEY_A, key) == NIUS_OK) {

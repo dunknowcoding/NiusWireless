@@ -1,5 +1,5 @@
 /*
- * rc522_s50 — MIFARE Classic 1K (S50) read/write demo
+ * rc522_spi_s50 - MIFARE Classic 1K (S50) read/write demo (software SPI).
  *
  * Authenticates block 4 with the factory key, writes a recognisable
  * payload, reads it back, and restores the original content.
@@ -8,7 +8,7 @@
  * healthy S50 (or any compatible 1K card).
  *
  * --- Wiring (Arduino UNO R4 WiFi) ---
- *   Same as rc522_basic.
+ *   Same as rc522_spi_basic.
  */
 
 #include <NiusWireless.h>
@@ -38,7 +38,7 @@ void loop() {
     if (!rfid.cardPresentWake()) return;
 
     if (rfid.getCardType() != NIUS_CARD_MIFARE_1K) {
-        Serial.println(F("Not a 1K card — skipping."));
+        Serial.println(F("Not a 1K card - skipping."));
         rfid.halt();
         return;
     }

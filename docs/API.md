@@ -117,7 +117,7 @@ Return a human-readable version string, e.g. `"MFRC522 v2.0"`.
 ```cpp
 #include <NiusWireless.h>
 
-NiusRC522 rfid(SDA, 10, SCL, 11, 12);   // 5 software-SPI pins (see constructors)
+NiusRC522 rfid(SDA, 10, SCL, 11, 12);   // 5 software-SPI pins
 
 void setup() {
     Serial.begin(9600);
@@ -136,18 +136,22 @@ If you only need the UID and a recommended example for the card family, that loo
 
 #### Examples shipped with the library
 
-| Sketch | Size | Use it for |
-|--------|------|------------|
-| `examples/rc522_basic` | 30 lines | Just detect a tag — UID / ATQA / SAK / type. Closest to a "hello world". |
-| `examples/rc522_adv` | 50 lines | One-shot dump + Classic block-0 roundtrip + register inspection. |
-| `examples/rc522_s50` | 60 lines | Tightly focused MIFARE Classic 1K write/read/restore demo. |
-| `examples/rc522_tag` | 70 lines | Type-adaptive: Classic dump / UL dump / CUID UID-change demo. |
+| Sketch | Use it for |
+|--------|------------|
+| `examples/rc522_spi_basic` | Just detect a tag - UID / ATQA / SAK / type. Closest to a "hello world". |
+| `examples/rc522_spi_adv` | One-shot dump + Classic block-0 roundtrip + register inspection. |
+| `examples/rc522_spi_s50` | Tightly focused MIFARE Classic 1K write/read/restore demo. |
+| `examples/rc522_spi_tag` | Type-adaptive: Classic dump / UL dump / CUID UID-change demo. |
+| `examples/rc522_i2c_basic` | Same as `rc522_spi_basic`, but on the chip's I2C bus. |
+| `examples/rc522_i2c_adv` | Same as `rc522_spi_adv`, but on the chip's I2C bus; auto-detects Classic vs Ultralight and runs the appropriate operations. |
 
-The first four are user-facing. For field debugging — register inspection, post-failure IRQ decoding, bricked-card recovery — use the [`printRegisters` / `printStatus` / `powerCycle` debug methods](#rc522-debug) below; no separate diagnostic sketch is needed.
+The six examples above are user-facing. For field debugging - register inspection, post-failure IRQ decoding, bricked-card recovery - use the [`printRegisters` / `printStatus` / `powerCycle` debug methods](#rc522-debug) below; no separate diagnostic sketch is needed.
 
 ---
 
 ### Constructors
+
+The MFRC522 chip exposes both SPI and I2C. Pick whichever matches your wiring. The `begin()` call detects which constructor was used and initialises the matching bus.
 
 #### Hardware SPI
 
@@ -159,8 +163,8 @@ Uses the board's default hardware SPI bus.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `csPin` | `uint8_t` | Chip-select (SS) pin |
-| `rstPin` | `uint8_t` | Reset pin |
+| `csPin`   | `uint8_t` | Chip-select (SS) pin |
+| `rstPin`  | `uint8_t` | Reset pin |
 
 #### Software SPI
 
@@ -182,9 +186,45 @@ hardware SCK pin (e.g. the reference wiring uses SCL/A5 as SCK).
 **Reference wiring example (Arduino UNO R4 WiFi):**
 
 ```cpp
-// SDA→D18/A4  SCK→D19/A5  MOSI→D11  MISO→D12  IRQ→D13  RST→D10
+// SDA->D18/A4  SCK->D19/A5  MOSI->D11  MISO->D12  IRQ->D13  RST->D10
 NiusRC522 rfid(SDA, 10, SCL, 11, 12);
 ```
+
+#### I2C
+
+```cpp
+NiusRC522 rfid(Wire, 0x28, rstPin);
+NiusRC522 rfid(Wire1, 0x29, 10);      // second I2C bus, alternate I2C address
+```
+
+Uses the MFRC522 chip's I2C bus via the supplied `TwoWire` reference
+(typically `Wire` or `Wire1`). The board's SDA / SCL pins must be wired
+to the chip's I2C_SDA / I2C_SCL pins (D18/A4 and D19/A5 on UNO R4 WiFi).
+
+The chip's I2C address is set by the I2C_ADD0 pin:
+- `I2C_ADD0 LOW  -> 7-bit address 0x28`
+- `I2C_ADD0 HIGH -> 7-bit address 0x29`
+
+Default bus speed is 400 kHz (Fast mode), set by `begin()`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `bus` | `TwoWire &` | The Wire reference (typically `Wire`, or `Wire1`/`Wire2` on boards with multiple buses) |
+| `i2cAddress` | `uint8_t` | 7-bit I2C address (`0x28` or `0x29`) |
+| `rstPin` | `uint8_t` | Hardware reset pin (RC522 RST) |
+
+**Reference wiring example (Arduino UNO R4 WiFi, address 0x28):**
+
+```cpp
+//   chip I2C_SDA -> board SDA (D18/A4)
+//   chip I2C_SCL -> board SCL (D19/A5)
+//   chip RST     -> D10
+#include <Wire.h>
+NiusRC522 rfid(Wire, 0x28, 10);
+```
+
+> I2C sub-byte alignment (`rxAlign`) is unsupported - the chip itself
+> only delivers full bytes over I2C.
 
 ---
 
@@ -195,8 +235,10 @@ bool begin()
 bool begin(uint32_t spiSpeed)
 ```
 
-Initialise the RC522.  The optional `spiSpeed` (default 4 000 000 Hz) only affects
-hardware SPI mode; software SPI runs as fast as the MCU GPIO allows.
+Initialise the RC522 transport (SPI or I2C, depending on which constructor
+was used) and the chip.  The optional `spiSpeed` (default 4 000 000 Hz) only
+affects hardware SPI mode; software SPI runs as fast as the MCU GPIO allows.
+On I2C, the `spiSpeed` argument is ignored.
 
 **Returns:** `true` if the chip is detected.
 

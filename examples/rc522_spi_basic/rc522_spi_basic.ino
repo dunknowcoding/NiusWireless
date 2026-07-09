@@ -1,9 +1,9 @@
 /*
- * rc522_basic — Minimal RC522 example
+ * rc522_spi_basic - Minimal RC522 example (software SPI).
  *
- * Just detects a tag on the reader and prints its UID / type to the
+ * Detects a tag on the reader and prints its UID / type to the
  * serial monitor. The smallest possible sketch that exercises the
- * library — about 30 lines.
+ * library - about 30 lines.
  *
  * --- Wiring (Arduino UNO R4 WiFi) ---
  *   RC522 SDA  -> SDA   (D18 / A4)   software-SPI chip-select
@@ -14,8 +14,8 @@
  *   RC522 3.3V -> 3.3V   (do not power from 5V)
  *   RC522 GND  -> GND
  *
- * On other boards, swap the pin numbers for whatever's convenient —
- * any 5 GPIOs work for software SPI.
+ * On other boards, swap the pin numbers for whatever's convenient.
+ * Any 5 GPIOs work for software SPI.
  */
 
 #include <NiusWireless.h>
@@ -33,5 +33,5 @@ void loop() {
     if (!rfid.cardPresent()) return;  // single-shot per physical tap
     rfid.printInfo();                  // UID / ATQA / SAK / type
     rfid.halt();                       // tag goes to HALT state
-    delay(1000);                       // debounce so a stuck card doesn't spam
+    delay(1000);                       // debounce so a stuck card does not spam
 }
