@@ -20,6 +20,11 @@ Debug/
 examples/*_test/
 examples/*_debug/
 
+# --- Local tooling (not part of the library) ---
+scripts/
+*.ps1
+extract-github-token*
+
 # --- Python tooling ---
 __pycache__/
 *.pyc
