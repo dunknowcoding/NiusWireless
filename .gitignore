@@ -44,3 +44,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# --- Local hardware docs (do not publish) ---
+SAMD21-M0-Mini.pdf
+SAMD21-M0-Mini.png
+*.local.pdf

@@ -16,6 +16,17 @@
 #include <Arduino.h>
 
 /* -----------------------------------------------------------------------
+ * Console serial — SAMD native-USB boards (Zero / M0-Mini) expose the
+ * monitor on SerialUSB; Serial is wired to the EDBG UART and is absent on
+ * RobotDyn M0-Mini clones. Other boards keep using Serial.
+ * ---------------------------------------------------------------------- */
+#if defined(ARDUINO_ARCH_SAMD) && defined(USBCON)
+  #define NIUS_SERIAL SerialUSB
+#else
+  #define NIUS_SERIAL Serial
+#endif
+
+/* -----------------------------------------------------------------------
  * Return-code constants shared by all NiusWireless modules
  * ---------------------------------------------------------------------- */
 

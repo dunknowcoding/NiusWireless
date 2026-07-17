@@ -195,6 +195,27 @@ cap across VCC / GND if you see brownouts on TX.
 Plain UART — TX / RX cross-connected at 3.3V levels. Use a divider if your
 board is 5V.
 
+### PN532 — I2C (4-wire; RobotDyn SAMD21 M0-Mini / Arduino Zero)
+
+I2C mode is **SDA / SCL / VCC / GND** only. IRQ and RSTO are SPI-mode pins
+(used by the forthcoming `pn532_spi_*` examples).
+
+| PN532 pin | Board pin | Notes |
+|---|---|---|
+| SDA | D20 / SDA | Wire default |
+| SCL | D21 / SCL | Wire default |
+| VCC | 3V3 | Do not use 5V / VIN |
+| GND | GND | |
+
+```cpp
+NiusPN532 nfc(0xFF, 0xFF);   // 4-wire I2C — poll ready over the bus
+```
+
+Set the breakout jumpers / DIP switches to I2C mode (Elechouse V3/V4: **SW1=ON,
+SW2=OFF**). On RobotDyn SAMD21 M0-Mini select **Arduino Zero (Native USB Port)**
+in the IDE — serial output goes to `SerialUSB` via the `NIUS_SERIAL` macro in
+`NiusBase.h`. See `examples/pn532_i2c_basic` and `examples/pn532_i2c_adv`.
+
 ---
 
 ## RC522 — card & tag coverage
@@ -279,7 +300,8 @@ Arduino IDE via **File → Examples → NiusWireless → …**.
 | `nrf24_basic`     | NRF24L01 | Transmit counter packets |
 | `hc12_basic`      | HC-12 | Wireless Serial Monitor bridge |
 | `hc06_basic`      | HC-06 | Bluetooth SPP terminal |
-| `pn532_basic`     | PN532 | NFC tag UID reader |
+| `pn532_i2c_basic` | PN532 (I2C) | Minimal UID / ATQA / SAK dump — smallest I2C sketch |
+| `pn532_i2c_adv`   | PN532 (I2C) | Bus clock, retries, Classic block 4 read / write |
 
 ---
 

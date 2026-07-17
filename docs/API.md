@@ -821,27 +821,58 @@ NiusHC06 bt(serial, baudRate);
 
 ## NiusPN532 — PN532 NFC/RFID
 
-**Status:** Stub — full implementation in a future release.
+I2C (address `0x24`) and SPI. Detects ISO 14443A tags, authenticates /
+reads / writes MIFARE Classic blocks, and reads / writes Type-2 NDEF.
 
 ### Constructors
 
 ```cpp
-NiusPN532 nfc(irqPin, rstPin);          // I2C mode (default)
-NiusPN532 nfc(csPin, rstPin, true);     // SPI mode
+NiusPN532 nfc(0xFF, 0xFF);                  // I2C 4-wire (no IRQ / RSTO)
+NiusPN532 nfc(Wire, 0xFF, 0xFF);            // I2C on an explicit TwoWire bus
+NiusPN532 nfc(csPin, rstPin, true);         // SPI (RSTO + CS; IRQ in spi_adv)
 ```
+
+I2C is SDA / SCL / VCC / GND only. Pass `0xFF` for irq/rst so the driver
+polls the I2C ready status byte. IRQ / RSTO are SPI-mode pins.
 
 ### Key Methods
 
 | Method | Description |
 |--------|-------------|
-| `cardPresent()` | Detect ISO 14443A card |
-| `getUID()` | UID as hex String |
-| `getUIDBytes(buf, len)` | UID as byte array |
+| `begin()` | Reset, GetFirmwareVersion, SAMConfiguration |
+| `setI2CClock(hz)` | Wire clock (default 100 kHz) |
+| `setPassiveActivationRetries(n)` | `InListPassiveTarget` retry count (`0xFF` = forever) |
+| `getFirmwareVersion(ver)` | Raw IC / Ver / Rev / Support word |
+| `cardPresent()` | Detect ISO 14443A card (`InListPassiveTarget`) |
+| `printInfo()` | Print UID / ATQA / SAK |
+| `getUID()` / `getUIDBytes()` | UID helpers |
+| `getATQA()` / `getSAK()` | Last detection meta |
 | `authenticate(block, keyType, key)` | MIFARE Classic auth |
 | `readBlock(block, data)` | Read 16-byte block |
 | `writeBlock(block, data)` | Write 16-byte block |
 | `readNDEF(buf, len)` | Read NDEF from Type 2 tag |
 | `writeNDEF(buf, len)` | Write NDEF to Type 2 tag |
+
+### Quick start (I2C)
+
+```cpp
+#include <NiusWireless.h>
+
+NiusPN532 nfc(0xFF, 0xFF);   // 4-wire I2C
+
+void setup() {
+    Serial.begin(9600);
+    delay(1500);
+    nfc.begin();
+}
+
+void loop() {
+    if (!nfc.cardPresent()) return;
+    Serial.println(nfc.getUID());
+}
+```
+
+See `examples/pn532_i2c_basic` and `examples/pn532_i2c_adv`.
 
 ---
 
