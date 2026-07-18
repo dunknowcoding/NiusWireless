@@ -2,17 +2,21 @@
  * pn532_spi_basic - Minimal PN532 example over SPI.
  *
  * Detects an ISO14443A tag and prints its UID / ATQA / SAK / Type.
- * Uses status-byte ready (no IRQ handler required).
+ * Uses status-byte ready when IRQ is unwired (no setIRQPin).
  * After printInfo(), halt() + cardPresentWake() keep HALT'd cards visible.
  *
  * --- Wiring (RobotDyn SAMD21 M0-Mini — SAMD21-M0-Mini.pdf) ---
- *   PN532 SCK/MOSI/MISO -> ICSP
+ *   PN532 SCK/MOSI/MISO -> ICSP (pins 24 / 23 / 22)
  *   PN532 SS            -> D8
- *   PN532 IRQ           -> D9 (optional)
+ *   PN532 IRQ           -> D9 (optional; see pn532_spi_adv)
  *   PN532 RSTO          -> board RESET
  *   PN532 VCC / GND     -> 3V3 / GND
  *
- * DIP: SW1=OFF, SW2=ON (SPI).
+ * DIP: SPI mode (Elechouse: SW1=OFF, SW2=ON).
+ * After changing DIP, the PN532 must see an RSTO/power-on edge so I0/I1
+ * re-latch — USB reconnect or RESET button if RSTO is tied to board RESET.
+ *
+ * Loop: cardPresentWake() → printInfo() (UID / ATQA / SAK / Type) → halt().
  *
  * --- Try it ---
  *   1. Upload; open Serial Monitor at 9600.
@@ -39,23 +43,28 @@ void setup() {
 #endif
     NIUS_SERIAL.println(F("NiusWireless PN532 SPI"));
 
+    nfc.setSpiClock(2000000UL);  /* optional; default is already 2 MHz */
+
     if (!nfc.begin()) {
         NIUS_SERIAL.println(F("ERROR: PN532 begin() failed"));
         while (1) { delay(500); }
     }
 
+    /* Faster empty-field polls (still reliable with a card present). */
+    if (!nfc.setPassiveActivationRetries(0x02)) {
+        NIUS_SERIAL.println(F("(setPassiveActivationRetries failed — continuing)"));
+    }
+
     NIUS_SERIAL.print(F("PN532 ready: "));
     NIUS_SERIAL.println(nfc.getVersion());
     NIUS_SERIAL.println(F("Hold an ISO14443A tag near the reader..."));
-    delay(500);
 }
 
 void loop() {
     if (!nfc.cardPresentWake()) {
-        delay(200);
+        delay(50);
         return;
     }
     nfc.printInfo();   // UID / ATQA / SAK / Type
     nfc.halt();
-    delay(500);
 }

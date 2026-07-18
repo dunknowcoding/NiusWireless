@@ -843,16 +843,17 @@ NiusPN532 nfc(csPin, rstPin, true);   // SPI
 | ESP32, RP2040, UNO R4… | Optional | `WIRE_HAS_TIMEOUT` → I2C status poll |
 
 Pass `rstPin = 0xFF` when RSTO is unwired. SAMConfiguration enables the IRQ
-line automatically when `irqPin != 0xFF` (I2C constructor) or after
-`setIRQPin()` (SPI / late wiring).
+line automatically when `irqPin != 0xFF` — for **both I2C and SPI** (I2C
+constructor irq pin, or `setIRQPin()` before `begin()` on SPI).
 
 ### Key Methods
 
 | Method | Description |
 |--------|-------------|
 | `begin()` | Reset, GetFirmwareVersion, SAMConfiguration |
-| `setIRQPin(pin)` | Optional P70_IRQ (active LOW). Call **before** `begin()` |
+| `setIRQPin(pin)` | Optional P70_IRQ (active LOW). Call **before** `begin()`; works for I2C **and** SPI |
 | `setI2CClock(hz)` | Wire clock (default 100 kHz) |
+| `setSpiClock(hz)` | SPI clock (default 2 MHz; clamped 100 kHz–4 MHz) |
 | `setPassiveActivationRetries(n)` | `InListPassiveTarget` retry count (`0xFF` = forever) |
 | `getFirmwareVersion(ver)` | Raw IC / Ver / Rev / Support word |
 | `cardPresent()` | Detect ISO 14443A; sets `lastError` / `lastCardType` |
@@ -903,12 +904,13 @@ See `examples/pn532_i2c_basic` and `examples/pn532_i2c_adv`.
 ```cpp
 #include <NiusWireless.h>
 
-NiusPN532 nfc(10, 0xFF, true);   // CS=D10, no RST; SPI mode
+NiusPN532 nfc(8, 0xFF, true);   // CS=D8 (M0-Mini), no RST GPIO; SPI mode
 
 void setup() {
     Serial.begin(9600);
     delay(1500);
-    // Optional IRQ (advanced): nfc.setIRQPin(9);
+    nfc.setSpiClock(2000000UL);   // optional; default is 2 MHz
+    // Optional IRQ (advanced): nfc.setIRQPin(9);  // BEFORE begin()
     nfc.begin();
 }
 
@@ -919,10 +921,15 @@ void loop() {
 }
 ```
 
+Reference wiring (RobotDyn SAMD21 M0-Mini): ICSP SCK/MOSI/MISO, **SS=D8**,
+optional IRQ=D9. Hardware SPI is used by default; soft SPI is a fallback.
+
+- Scan: `examples/pn532_spi_scan` — begin + firmware, then wake/printInfo.
 - Basic (no IRQ): `examples/pn532_spi_basic` — polls SPI status byte.
 - Advanced (IRQ): `examples/pn532_spi_adv` — `setIRQPin()` + dump / Classic block R/W.
 
-Elechouse DIP for SPI: **SW1=OFF, SW2=ON**.
+Elechouse DIP for SPI: **SW1=OFF, SW2=ON**. After changing DIP, apply an
+RSTO / power-on edge (USB reconnect or RESET) so I0/I1 re-latch.
 
 ---
 

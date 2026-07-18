@@ -8,13 +8,15 @@
  * Loop uses cardPresentWake(); errors via NiusPN532::errorName().
  *
  * --- Wiring (RobotDyn SAMD21 M0-Mini — see SAMD21-M0-Mini.pdf) ---
- *   PN532 SCK/MOSI/MISO -> board ICSP
+ *   PN532 SCK/MOSI/MISO -> board ICSP (pins 24 / 23 / 22)
  *   PN532 SS            -> D8
  *   PN532 IRQ           -> D9
  *   PN532 RSTO          -> board RESET
  *   PN532 VCC / GND     -> 3V3 / GND
  *
  * DIP: Elechouse SPI — SW1=OFF, SW2=ON.
+ * After changing DIP, the PN532 must see an RSTO/power-on edge so I0/I1
+ * re-latch — USB reconnect or RESET button if RSTO is tied to board RESET.
  *
  * Optional: -DPN532_ADV_COMMIT_UID=1  -DPN532_ADV_DEMO_KEY_CHANGE=1
  */
@@ -119,7 +121,7 @@ static void op_Classic() {
     nfc.stopCrypto();
 
 #if PN532_ADV_DEMO_KEY_CHANGE
-    /* Sector 1 / block 7 Key A only — see pn532_i2c_adv comments. */
+    /* Sector 1 / trailer 7 Key A only — see pn532_i2c_adv comments. */
     if (nfc.cardPresentWake() &&
         nfc.authenticate(7, NIUS_KEY_A, nullptr) == NIUS_OK) {
         uint8_t trailer[16];
@@ -189,12 +191,33 @@ void setup() {
 #endif
     NIUS_SERIAL.println(F("NiusWireless PN532 SPI (advanced)"));
 
+    /* IRQ must be set BEFORE begin() so SAMConfiguration enables useIRQ. */
     nfc.setIRQPin(PN532_IRQ);
+    nfc.setSpiClock(2000000UL);
+
     if (!nfc.begin()) {
         NIUS_SERIAL.println(F("ERROR: PN532 begin() failed"));
         while (1) { delay(500); }
     }
     (void)nfc.setPassiveActivationRetries(0x02);
+
+#if PN532_IRQ != 0xFF
+    NIUS_SERIAL.println(F("Ready mode: IRQ (P70_IRQ)"));
+#else
+    NIUS_SERIAL.println(F("Ready mode: SPI status byte"));
+#endif
+
+    uint32_t ver = 0;
+    if (nfc.getFirmwareVersion(ver)) {
+        NIUS_SERIAL.print(F("IC=0x"));
+        NIUS_SERIAL.print((uint8_t)(ver >> 24), HEX);
+        NIUS_SERIAL.print(F("  FW="));
+        NIUS_SERIAL.print((uint8_t)(ver >> 16));
+        NIUS_SERIAL.print('.');
+        NIUS_SERIAL.print((uint8_t)(ver >> 8));
+        NIUS_SERIAL.print(F("  support=0x"));
+        NIUS_SERIAL.println((uint8_t)ver, HEX);
+    }
 
     NIUS_SERIAL.print(F("PN532 ready: "));
     NIUS_SERIAL.println(nfc.getVersion());

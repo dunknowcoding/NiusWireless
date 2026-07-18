@@ -69,6 +69,8 @@ void NiusPN532::initCommon() {
     _atqa     = 0;
     _sak      = 0;
     _i2cClock = 100000UL;
+    _spiClock = 2000000UL;
+    _softSpi  = false;
     _i2cAddr  = NIUS_PN532_I2C_ADDR;
     _mxRtyPassive = 0x20;
     uidLen       = 0;
@@ -123,13 +125,15 @@ bool NiusPN532::begin() {
     if (_useSPI) {
         pinMode(_csPin, OUTPUT);
         digitalWrite(_csPin, HIGH);
-#if defined(ARDUINO_ARCH_SAMD)
+#if defined(NIUS_PN532_FORCE_SOFT_SPI) && defined(ARDUINO_ARCH_SAMD)
+        _softSpi = true;
         pinMode(NIUS_PN532_SPI_SCK, OUTPUT);
         digitalWrite(NIUS_PN532_SPI_SCK, LOW);
         pinMode(NIUS_PN532_SPI_MOSI, OUTPUT);
         digitalWrite(NIUS_PN532_SPI_MOSI, LOW);
         pinMode(NIUS_PN532_SPI_MISO, INPUT_PULLUP);
 #else
+        _softSpi = false;
         SPI.begin();
 #endif
     } else {
@@ -170,6 +174,9 @@ bool NiusPN532::begin() {
             uint8_t dump[16];
             (void)readResponse(dump, sizeof(dump), 200);
         }
+        if (_irqPin != 0xFF) {
+            (void)drainIrqResponse();
+        }
         delay(10);
     } else {
         if (_irqPin != 0xFF) {
@@ -204,7 +211,40 @@ bool NiusPN532::begin() {
     if (!getFirmwareVersion(ver)) {
         delay(50);
         if (!getFirmwareVersion(ver)) {
-            return false;
+#if defined(ARDUINO_ARCH_SAMD)
+            /* Hardware SPI failed — fall back to soft SPI once and re-sync. */
+            if (_useSPI && !_softSpi) {
+                _softSpi = true;
+                SPI.end(); /* release SERCOM before bit-bang on ICSP pins */
+                pinMode(NIUS_PN532_SPI_SCK, OUTPUT);
+                digitalWrite(NIUS_PN532_SPI_SCK, LOW);
+                pinMode(NIUS_PN532_SPI_MOSI, OUTPUT);
+                digitalWrite(NIUS_PN532_SPI_MOSI, LOW);
+                pinMode(NIUS_PN532_SPI_MISO, INPUT_PULLUP);
+                reset();
+                delay(_rstPin != 0xFF ? 50 : 10);
+                wakeup();
+                delay(10);
+                uint8_t syncCmd2[] = {PN532_CMD_GETFIRMWAREVERSION};
+                if (sendCommandCheckAck(syncCmd2, 1, 1000)) {
+                    uint8_t dump2[16];
+                    (void)readResponse(dump2, sizeof(dump2), 200);
+                }
+                if (_irqPin != 0xFF) {
+                    (void)drainIrqResponse();
+                }
+                delay(10);
+                if (!getFirmwareVersion(ver)) {
+                    delay(50);
+                    if (!getFirmwareVersion(ver)) {
+                        return false;
+                    }
+                }
+            } else
+#endif
+            {
+                return false;
+            }
         }
     }
     uint8_t ic = (uint8_t)(ver >> 24);
@@ -282,6 +322,16 @@ void NiusPN532::setI2CClock(uint32_t hz) {
     if (!_useSPI && _i2c) {
         _i2c->setClock(_i2cClock);
     }
+}
+
+void NiusPN532::setSpiClock(uint32_t hz) {
+    if (hz < 100000UL) {
+        hz = 100000UL;
+    }
+    if (hz > 4000000UL) {
+        hz = 4000000UL;
+    }
+    _spiClock = hz;
 }
 
 bool NiusPN532::setPassiveActivationRetries(uint8_t maxRetries) {
@@ -1044,8 +1094,8 @@ bool NiusPN532::getFirmwareVersion(uint32_t &version) {
 }
 
 bool NiusPN532::samConfig() {
-    /* SPI: status-byte ready (useIRQ=0). I2C: useIRQ=1 when IRQ wired. */
-    uint8_t useIrq = (!_useSPI && _irqPin != 0xFF) ? 0x01 : 0x00;
+    /* useIRQ=1 when P70_IRQ is wired (I2C and SPI). */
+    uint8_t useIrq = (_irqPin != 0xFF) ? 0x01 : 0x00;
     uint8_t cmd[] = {
         PN532_CMD_SAMCONFIGURATION,
         0x01,
@@ -1105,10 +1155,11 @@ uint8_t NiusPN532::dataExchange(const uint8_t *send, uint8_t sendLen,
 
 bool NiusPN532::wakeup() {
     if (_useSPI) {
+        /* First CS wake — keep a bit longer than per-txn wake. */
         digitalWrite(_csPin, LOW);
-        delay(2);
+        delayMicroseconds(2000);
         digitalWrite(_csPin, HIGH);
-        delay(2);
+        delayMicroseconds(500);
         return true;
     }
 
@@ -1120,15 +1171,24 @@ bool NiusPN532::wakeup() {
 
 /* If P70_IRQ is stuck LOW, unread host data is pending — drain until idle. */
 bool NiusPN532::drainIrqResponse() {
-    if (_useSPI || _irqPin == 0xFF) {
+    if (_irqPin == 0xFF) {
         return true;
     }
     uint8_t rounds = 0;
     while (digitalRead(_irqPin) == LOW && rounds < 16) {
         rounds++;
-        uint8_t avail = (uint8_t)_i2c->requestFrom((int)_i2cAddr, 32);
-        for (uint8_t i = 0; i < avail; i++) {
-            (void)_i2c->read();
+        if (_useSPI) {
+            spiBeginTxn();
+            spiTransfer(PN532_SPI_DATAREAD);
+            for (uint8_t i = 0; i < NIUS_PN532_FRAME_MAX; i++) {
+                (void)spiTransfer(0x00);
+            }
+            spiEndTxn();
+        } else {
+            uint8_t avail = (uint8_t)_i2c->requestFrom((int)_i2cAddr, 32);
+            for (uint8_t i = 0; i < avail; i++) {
+                (void)_i2c->read();
+            }
         }
         delay(5);
     }
@@ -1184,7 +1244,7 @@ bool NiusPN532::waitReady(uint16_t timeoutMs) {
         } else if (isReadyByte()) {
             return true;
         }
-        delay(10);
+        delayMicroseconds(100);
     }
     return false;
 }
@@ -1195,7 +1255,7 @@ bool NiusPN532::waitReadyStatus(uint16_t timeoutMs) {
         if (isReadyByte()) {
             return true;
         }
-        delay(10);
+        delayMicroseconds(50);
     }
     return false;
 }
@@ -1215,12 +1275,12 @@ bool NiusPN532::waitIrqHigh(uint16_t timeoutMs) {
 }
 
 bool NiusPN532::waitReadyData(uint16_t timeoutMs) {
-    return _useSPI ? waitReadyStatus(timeoutMs) : waitReady(timeoutMs);
+    return (_irqPin != 0xFF) ? waitReady(timeoutMs) : waitReadyStatus(timeoutMs);
 }
 
 bool NiusPN532::readAck(uint16_t timeoutMs) {
-    bool ready = (_useSPI || _irqPin == 0xFF) ? waitReadyStatus(timeoutMs)
-                                              : waitReady(timeoutMs);
+    bool ready = (_irqPin != 0xFF) ? waitReady(timeoutMs)
+                                   : waitReadyStatus(timeoutMs);
     if (!ready) {
         return false;
     }
@@ -1246,8 +1306,8 @@ bool NiusPN532::readAckBytes(uint8_t *ack) {
 
 bool NiusPN532::sendCommandCheckAck(const uint8_t *cmd, uint8_t cmdLen,
                                     uint16_t timeoutMs) {
-    /* I2C+IRQ: drain any pending frame so stuck LOW does not fake ready. */
-    if (!_useSPI && _irqPin != 0xFF) {
+    /* IRQ: drain any pending frame so stuck LOW does not fake ready. */
+    if (_irqPin != 0xFF) {
         (void)drainIrqResponse();
         (void)waitIrqHigh(50); /* best-effort idle; do not hard-fail */
     }
@@ -1259,9 +1319,6 @@ bool NiusPN532::sendCommandCheckAck(const uint8_t *cmd, uint8_t cmdLen,
         return false;
     }
     delay(2);
-    if (_useSPI) {
-        return waitReadyStatus(timeoutMs);
-    }
     if (_irqPin != 0xFF) {
         return waitReady(timeoutMs);
     }
@@ -1312,8 +1369,8 @@ bool NiusPN532::writeCommand(const uint8_t *cmd, uint8_t cmdLen) {
 }
 
 int16_t NiusPN532::readResponse(uint8_t *buf, uint8_t bufLen, uint16_t timeoutMs) {
-    bool ready = (_useSPI || _irqPin == 0xFF) ? waitReadyStatus(timeoutMs)
-                                              : waitReady(timeoutMs);
+    bool ready = (_irqPin != 0xFF) ? waitReady(timeoutMs)
+                                   : waitReadyStatus(timeoutMs);
     if (!ready) {
         return -1;
     }
@@ -1324,8 +1381,8 @@ int16_t NiusPN532::readResponse(uint8_t *buf, uint8_t bufLen, uint16_t timeoutMs
     if (_useSPI) {
         spiBeginTxn();
         spiTransfer(PN532_SPI_DATAREAD);
-        /* Clock a generous fixed-size frame; parser finds 00 FF below. */
-        frameLen = 40;
+        /* Clock a full FRAME_MAX window; parser finds 00 FF + LEN below. */
+        frameLen = NIUS_PN532_FRAME_MAX;
         for (uint8_t i = 0; i < frameLen; i++) {
             frame[i] = spiTransfer(0x00);
         }
@@ -1391,30 +1448,26 @@ int16_t NiusPN532::readResponse(uint8_t *buf, uint8_t bufLen, uint16_t timeoutMs
  * ---------------------------------------------------------------------- */
 
 void NiusPN532::spiBeginTxn() {
-#if defined(ARDUINO_ARCH_SAMD)
+    if (!_softSpi) {
+        SPI.beginTransaction(SPISettings(_spiClock, LSBFIRST, SPI_MODE0));
+    }
     digitalWrite(_csPin, LOW);
-#else
-    SPI.beginTransaction(SPISettings(1000000, LSBFIRST, SPI_MODE0));
-    digitalWrite(_csPin, LOW);
-#endif
+    delayMicroseconds(5);
 }
 
 void NiusPN532::spiBeginTxnWake() {
-#if defined(ARDUINO_ARCH_SAMD)
+    if (!_softSpi) {
+        SPI.beginTransaction(SPISettings(_spiClock, LSBFIRST, SPI_MODE0));
+    }
     digitalWrite(_csPin, LOW);
-    delay(2);
-#else
-    SPI.beginTransaction(SPISettings(1000000, LSBFIRST, SPI_MODE0));
-    digitalWrite(_csPin, LOW);
-    delay(2);
-#endif
+    delayMicroseconds(500);
 }
 
 void NiusPN532::spiEndTxn() {
     digitalWrite(_csPin, HIGH);
-#if !defined(ARDUINO_ARCH_SAMD)
-    SPI.endTransaction();
-#endif
+    if (!_softSpi) {
+        SPI.endTransaction();
+    }
 }
 
 #if defined(ARDUINO_ARCH_SAMD)
@@ -1423,15 +1476,15 @@ uint8_t NiusPN532::softSpiTransfer(uint8_t data) {
     for (uint8_t bit = 0; bit < 8; bit++) {
         digitalWrite(NIUS_PN532_SPI_MOSI, (data & 0x01) ? HIGH : LOW);
         data = (uint8_t)(data >> 1);
-        delayMicroseconds(2);
+        delayMicroseconds(1);
         digitalWrite(NIUS_PN532_SPI_SCK, HIGH);
-        delayMicroseconds(2);
+        delayMicroseconds(1);
         indata = (uint8_t)(indata >> 1);
         if (digitalRead(NIUS_PN532_SPI_MISO)) {
             indata |= 0x80;
         }
         digitalWrite(NIUS_PN532_SPI_SCK, LOW);
-        delayMicroseconds(2);
+        delayMicroseconds(1);
     }
     return indata;
 }
@@ -1439,8 +1492,9 @@ uint8_t NiusPN532::softSpiTransfer(uint8_t data) {
 
 uint8_t NiusPN532::spiTransfer(uint8_t data) {
 #if defined(ARDUINO_ARCH_SAMD)
-    return softSpiTransfer(data);
-#else
-    return SPI.transfer(data);
+    if (_softSpi) {
+        return softSpiTransfer(data);
+    }
 #endif
+    return SPI.transfer(data);
 }

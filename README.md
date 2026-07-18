@@ -234,17 +234,26 @@ Per `SAMD21-M0-Mini.pdf`:
 
 | PN532 pin | M0-Mini | Notes |
 |---|---|---|
-| SCK / MOSI / MISO | **ICSP** | Zero core pins 24 / 23 / 22 |
+| SCK / MOSI / MISO | **ICSP** | Zero core pins 24 / 23 / 22 — **hardware SPI** by default |
 | SS / NSS | **D8** | Chip select |
-| IRQ | **D9** | Required in `pn532_spi_adv`; unwired in basic |
+| IRQ | **D9** | Optional; required in `pn532_spi_adv` (`setIRQPin` before `begin`) |
 | RSTO | **board RESET** | Not driven as a sketch GPIO (`rstPin = 0xFF`) |
 | VCC | 3V3 | |
 | GND | GND | |
 
 Set DIP switches to SPI (Elechouse: **SW1=OFF, SW2=ON**).
+After changing DIP, the PN532 must see an **RSTO / power-on edge** so I0/I1
+re-latch — USB reconnect or the RESET button if RSTO is tied to board RESET.
 
-- **`pn532_spi_basic`** — status-byte poll only (no IRQ).
-- **`pn532_spi_adv`** — `setIRQPin(D9)` before `begin()`.
+Host SPI: `SPI.begin()` + `SPISettings` (default **2 MHz**, `setSpiClock()`;
+clamped 100 kHz–4 MHz). Soft SPI on ICSP pins is a fallback if hardware SPI
+fails GetFirmwareVersion (or `#define NIUS_PN532_FORCE_SOFT_SPI`).
+
+Test flow: `pn532_spi_scan` → `pn532_spi_basic` → `pn532_spi_adv`.
+
+- **`pn532_spi_scan`** — begin + firmware only, then optional wake/printInfo.
+- **`pn532_spi_basic`** — status-byte ready (no IRQ); `setSpiClock(2000000)`.
+- **`pn532_spi_adv`** — `setIRQPin(D9)` **before** `begin()`; dump / setUid / block 4.
 
 ---
 
@@ -333,7 +342,8 @@ Arduino IDE via **File → Examples → NiusWireless → …**.
 | `pn532_i2c_scan`  | PN532 (I2C) | Step 1: confirm chip at 0x24; then UID / Type via wake |
 | `pn532_i2c_basic` | PN532 (I2C) | Minimal UID / ATQA / SAK / Type (`cardPresentWake`) |
 | `pn532_i2c_adv`   | PN532 (I2C) | `dumpToSerial`, setUid dry-run, block 4 R/W, optional Key A demo |
-| `pn532_spi_basic` | PN532 (SPI) | Minimal UID / Type — SPI status poll, no IRQ |
+| `pn532_spi_scan`  | PN532 (SPI) | Step 1: begin + FW; then UID / Type via wake |
+| `pn532_spi_basic` | PN532 (SPI) | Minimal UID / Type — hw SPI, status poll, no IRQ |
 | `pn532_spi_adv`   | PN532 (SPI) | IRQ + same advanced flow as `pn532_i2c_adv` |
 
 ---

@@ -13,8 +13,9 @@
  *   rstPin — optional RSTO reset (0xFF if unwired).
  *
  * SPI:
- *   CS / SCK / MOSI / MISO
- *   IRQ, RSTO (reset) — used in SPI mode (see pn532_spi_* examples)
+ *   CS (SS=D8 on M0-Mini) / SCK / MOSI / MISO (ICSP 24/23/22)
+ *   IRQ (optional; setIRQPin before begin — see pn532_spi_adv)
+ *   RSTO — optional reset (0xFF if tied to board RESET)
  *
  * --- Reference wiring (RobotDyn SAMD21 M0-Mini / Arduino Zero, I2C) ---
  *   PN532 SDA -> D20 / SDA
@@ -121,8 +122,8 @@ public:
 
     /**
      * setIRQPin() — Optional P70_IRQ pin (active LOW). Call before begin().
-     * Used by I2C on SAMD21 and by SPI advanced examples. Pass 0xFF to
-     * disable and fall back to status-byte polling.
+     * Honored for I2C and SPI (SAMConfiguration useIRQ + ready waits).
+     * Pass 0xFF to disable and fall back to status-byte polling.
      */
     void setIRQPin(uint8_t irqPin);
 
@@ -131,6 +132,13 @@ public:
      * Call before begin(), or call again later to change the rate.
      */
     void setI2CClock(uint32_t hz);
+
+    /**
+     * setSpiClock() — SPI clock in Hz (default 2000000). Clamped to
+     * 100000–4000000. Call before begin(), or anytime (next transaction).
+     * SAMD uses hardware SPI on ICSP by default; soft SPI is a fallback.
+     */
+    void setSpiClock(uint32_t hz);
 
     /**
      * setRFField() — RFConfiguration item 1 (AutoRFCA / RF on-off).
@@ -289,6 +297,8 @@ private:
     uint16_t _atqa;
     uint8_t  _sak;
     uint32_t _i2cClock;
+    uint32_t _spiClock;
+    bool     _softSpi;
     uint8_t  _i2cAddr;
     TwoWire *_i2c;
     uint8_t  _mxRtyPassive;
