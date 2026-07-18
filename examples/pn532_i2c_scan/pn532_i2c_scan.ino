@@ -4,6 +4,9 @@
  * Do not use a generic I2C scanner on 0x24 — PN532 clock-stretches and can
  * hang SAMD21 Wire. This sketch uses NiusPN532::begin() instead.
  *
+ * After begin(), the loop prints UID / ATQA / SAK / Type via printInfo(),
+ * then halt() + cardPresentWake() so HALT'd cards stay detectable.
+ *
  * --- Wiring ---
  *   PN532 SDA / SCL / VCC / GND — same as pn532_i2c_basic
  *   PN532 IRQ — required on SAMD21 (default D9); optional elsewhere
@@ -50,10 +53,11 @@ void setup() {
 }
 
 void loop() {
-    if (nfc.cardPresent()) {
-        nfc.printInfo();
-        delay(1000);
-    } else {
+    if (!nfc.cardPresentWake()) {
         delay(100);
+        return;
     }
+    nfc.printInfo();   // UID / ATQA / SAK / Type
+    nfc.halt();
+    delay(500);
 }

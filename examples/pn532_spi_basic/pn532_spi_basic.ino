@@ -1,8 +1,9 @@
 /*
  * pn532_spi_basic - Minimal PN532 example over SPI.
  *
- * Detects an ISO14443A tag and prints its UID / ATQA / SAK.
+ * Detects an ISO14443A tag and prints its UID / ATQA / SAK / Type.
  * Uses status-byte ready (no IRQ handler required).
+ * After printInfo(), halt() + cardPresentWake() keep HALT'd cards visible.
  *
  * --- Wiring (RobotDyn SAMD21 M0-Mini — SAMD21-M0-Mini.pdf) ---
  *   PN532 SCK/MOSI/MISO -> ICSP
@@ -15,7 +16,7 @@
  *
  * --- Try it ---
  *   1. Upload; open Serial Monitor at 9600.
- *   2. Expect "PN532 ready: PN532 v1.x" then UID lines.
+ *   2. Expect "PN532 ready: PN532 v1.x" then UID / Type lines.
  */
 
 #include <NiusWireless.h>
@@ -50,10 +51,11 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresent()) {
+    if (!nfc.cardPresentWake()) {
         delay(200);
         return;
     }
-    nfc.printInfo();
+    nfc.printInfo();   // UID / ATQA / SAK / Type
+    nfc.halt();
     delay(500);
 }

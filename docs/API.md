@@ -856,7 +856,9 @@ line automatically when `irqPin != 0xFF` (I2C constructor) or after
 | `setPassiveActivationRetries(n)` | `InListPassiveTarget` retry count (`0xFF` = forever) |
 | `getFirmwareVersion(ver)` | Raw IC / Ver / Rev / Support word |
 | `cardPresent()` | Detect ISO 14443A; sets `lastError` / `lastCardType` |
+| `cardPresentWake()` | RF field off/on then `cardPresent()` — wakes HALT'd cards after `halt()` |
 | `printInfo()` | Print UID / ATQA / SAK / Type |
+| `dumpToSerial(key=nullptr)` | Type-adaptive dump (Classic sectors / UL pages); RC522-style lines |
 | `getCardType()` / `getCardTypeName()` | `NIUS_CARD_*` (same as RC522) |
 | `errorName(code)` | Flash string for `NIUS_OK` / `NIUS_ERR_*` |
 | `getUID()` / `getUIDBytes()` | UID helpers |
@@ -865,7 +867,8 @@ line automatically when `irqPin != 0xFF` (I2C constructor) or after
 | `readBlock(block, data)` | Read 16-byte block |
 | `writeBlock(block, data, force=false)` | Write; refuses block 0 / trailers unless `force` |
 | `setUid(uid, len, commit=false)` | Safe block-0 UID path (BCC + dry-run) |
-| `readPage` / `writePage` | Ultralight / NTAG 4-byte pages |
+| `readPage(page, data)` | Ultralight / NTAG READ — **16 bytes** (4 pages), same as RC522 |
+| `writePage(page, data)` | Ultralight / NTAG WRITE — 4 bytes; refuses pages 0–3 |
 | `halt()` / `stopCrypto()` | Release target / end crypto session |
 | `readNDEF(buf, len)` | Read NDEF from Type 2 tag |
 | `writeNDEF(buf, len)` | Write NDEF to Type 2 tag |
@@ -886,8 +889,10 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresent()) return;
-    Serial.println(nfc.getUID());
+    if (!nfc.cardPresentWake()) return;
+    nfc.printInfo();
+    nfc.dumpToSerial();
+    nfc.halt();
 }
 ```
 
@@ -908,13 +913,14 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresent()) return;
-    Serial.println(nfc.getUID());
+    if (!nfc.cardPresentWake()) return;
+    nfc.printInfo();
+    nfc.halt();
 }
 ```
 
 - Basic (no IRQ): `examples/pn532_spi_basic` — polls SPI status byte.
-- Advanced (IRQ): `examples/pn532_spi_adv` — `setIRQPin()` + Classic block R/W.
+- Advanced (IRQ): `examples/pn532_spi_adv` — `setIRQPin()` + dump / Classic block R/W.
 
 Elechouse DIP for SPI: **SW1=OFF, SW2=ON**.
 

@@ -5,15 +5,20 @@
  * errors by NIUS_ERR_* name, then runs a safe exercise for that family:
  *
  *   MIFARE Classic 1K / 4K / Mini:
- *     - Data block 4: read → write marker → read-back → restore
+ *     - dumpToSerial() — full Key-A dump (factory key by default)
  *     - setUid(...): always dry-run (BCC + manufacturer preview).
  *       Optional commit writes the *same* UID back (CUID/magic only) so
  *       BCC/layout are verified without changing the card identity.
+ *     - Data block 4: read → write marker → read-back → restore
  *     - Optional Key A change on sector 1 trailer (block 7) only — Key B
  *       and access bits are never modified; factory Key A is restored.
  *
  *   MIFARE Ultralight / NTAG:
- *     - readPage(4) → writePage(4) marker → restore (pages 0–3 refused)
+ *     - dumpToSerial() — pages until READ fails
+ *     - readPage(4) → 16 bytes; writePage(4) marker on first 4 bytes → restore
+ *       (pages 0–3 refused by writePage)
+ *
+ * Loop uses cardPresentWake() so halt()'d cards are re-selected via RF cycle.
  *
  * --- Safety (Classic) ---
  *   writeBlock() refuses block 0 and sector trailers unless force=true.
@@ -83,9 +88,10 @@ static bool isTransportAccessBits(const uint8_t *trailer) {
 
 static void op_Classic() {
     NIUS_SERIAL.println(F("--- MIFARE Classic ---"));
+    nfc.dumpToSerial();
 
     /*
-     * UID path first (card still selected from cardPresent).
+     * UID path (card still selected after dump's final wake).
      * Dry-run always. Optional commit rewrites the *same* UID so BCC /
      * manufacturer layout are verified without changing identity.
      * Stock (non-CUID) cards fail commit — expected.
@@ -102,7 +108,7 @@ static void op_Classic() {
         nfc.stopCrypto();
     }
 
-    if (!nfc.cardPresent()) {
+    if (!nfc.cardPresentWake()) {
         NIUS_SERIAL.print(F("(re-detect after setUid: "));
         NIUS_SERIAL.print(NiusPN532::errorName(nfc.lastError));
         NIUS_SERIAL.println(F(")"));
@@ -151,7 +157,7 @@ static void op_Classic() {
      *   after:  Key A restored to FFFFFFFFFFFF
      * Skipped unless trailer already has transport access bits.
      */
-    if (nfc.cardPresent() &&
+    if (nfc.cardPresentWake() &&
         nfc.authenticate(7, NIUS_KEY_A, nullptr) == NIUS_OK) {
         uint8_t trailer[16];
         if (nfc.readBlock(7, trailer) == NIUS_OK &&
@@ -164,7 +170,7 @@ static void op_Classic() {
             NIUS_SERIAL.println(F("  Key A -> A1A2A3A4A5A6 (Key B + AC kept)"));
             if (nfc.writeBlock(7, modified, true) == NIUS_OK) {
                 nfc.stopCrypto();
-                if (nfc.cardPresent() &&
+                if (nfc.cardPresentWake() &&
                     nfc.authenticate(7, NIUS_KEY_A,
                                      (uint8_t *)DEMO_KEY_A_SECTOR1) == NIUS_OK) {
                     NIUS_SERIAL.println(F("  auth with demo Key A OK"));
@@ -172,7 +178,7 @@ static void op_Classic() {
                     NIUS_SERIAL.println(F("  Key A restored to FFFFFFFFFFFF"));
                 } else {
                     NIUS_SERIAL.println(F("  ERROR: demo Key A auth failed — trying restore"));
-                    if (nfc.cardPresent() &&
+                    if (nfc.cardPresentWake() &&
                         nfc.authenticate(7, NIUS_KEY_A, nullptr) == NIUS_OK) {
                         nfc.writeBlock(7, trailer, true);
                     }
@@ -190,7 +196,10 @@ static void op_Classic() {
 
 static void op_Ultralight() {
     NIUS_SERIAL.println(F("--- MIFARE Ultralight / NTAG ---"));
-    uint8_t page4[4];
+    nfc.dumpToSerial();
+
+    /* readPage returns 16 bytes (4 pages); writePage writes one 4-byte page. */
+    uint8_t page4[16];
     if (nfc.readPage(4, page4) != NIUS_OK) {
         NIUS_SERIAL.println(F("readPage(4) failed"));
         return;
@@ -200,12 +209,12 @@ static void op_Ultralight() {
 
     uint8_t marker[4] = { 'N', 'I', '!', 0x00 };
     if (nfc.writePage(4, marker) == NIUS_OK) {
-        uint8_t tmp[4];
+        uint8_t tmp[16];
         if (nfc.readPage(4, tmp) == NIUS_OK) {
             NIUS_SERIAL.print(F("read-back: "));
             printHex(tmp, 4);
         }
-        nfc.writePage(4, page4);
+        nfc.writePage(4, page4); /* restore first 4 bytes only */
         NIUS_SERIAL.println(F("(original page 4 restored)"));
     } else {
         NIUS_SERIAL.println(F("writePage(4) failed"));
@@ -264,7 +273,7 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresent()) {
+    if (!nfc.cardPresentWake()) {
         /* Occasional idle diagnostic (not every poll). */
         static uint16_t misses;
         if ((++misses % 40) == 0) {

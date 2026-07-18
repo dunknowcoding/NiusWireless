@@ -1,7 +1,8 @@
 /*
  * pn532_i2c_basic - Minimal PN532 example over I2C.
  *
- * Detects an ISO14443A tag and prints its UID / ATQA / SAK.
+ * Detects an ISO14443A tag and prints its UID / ATQA / SAK / Type.
+ * The smallest sketch that exercises the I2C transport.
  *
  * --- Wiring ---
  *   PN532 SDA  -> board SDA (D20)
@@ -17,9 +18,12 @@
  * After changing DIP, the PN532 must see an RSTO/power-on edge so I0/I1
  * re-latch — USB reconnect or RESET button if RSTO is tied to board RESET.
  *
+ * Loop: cardPresentWake() → printInfo() (UID / ATQA / SAK / Type) → halt().
+ * cardPresentWake() cycles RF so cards left in HALT stay detectable.
+ *
  * --- Try it ---
  *   1. Upload; open Serial Monitor at 9600.
- *   2. Expect "PN532 ready: PN532 v1.x" then UID lines.
+ *   2. Expect "PN532 ready: PN532 v1.x" then UID / Type lines.
  */
 
 #include <NiusWireless.h>
@@ -57,10 +61,10 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresent()) {
-        delay(200);
+    if (!nfc.cardPresentWake()) {
+        delay(50);
         return;
     }
-    nfc.printInfo();
-    delay(1000);
+    nfc.printInfo();   // UID / ATQA / SAK / Type
+    nfc.halt();
 }

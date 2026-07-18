@@ -389,6 +389,112 @@ bool NiusPN532::cardPresent() {
     return true;
 }
 
+bool NiusPN532::cardPresentWake() {
+    /* RF off/on clears HALT so InListPassiveTarget can re-select. */
+    (void)setRFField(1, 0);
+    delay(10);
+    (void)setRFField(1, 1);
+    delay(10);
+    return cardPresent();
+}
+
+/* Dump line printer — one 16-byte block/chunk per call (RC522 format). */
+static uint16_t _pn532DumpBlk = 0;
+
+static void _pn532DumpPrint(const uint8_t *data) {
+    uint16_t b = _pn532DumpBlk;
+    if (b < 100) NIUS_SERIAL.print(' ');
+    if (b < 10)  NIUS_SERIAL.print(' ');
+    NIUS_SERIAL.print(b);
+    NIUS_SERIAL.print(F(":  "));
+    for (uint8_t j = 0; j < 16; j++) {
+        if (data[j] < 0x10) NIUS_SERIAL.print('0');
+        NIUS_SERIAL.print(data[j], HEX);
+        NIUS_SERIAL.print(' ');
+    }
+    NIUS_SERIAL.print(F(" ["));
+    for (uint8_t j = 0; j < 16; j++) {
+        char c = (data[j] >= 0x20 && data[j] < 0x7F) ? (char)data[j] : '.';
+        NIUS_SERIAL.print(c);
+    }
+    NIUS_SERIAL.println(']');
+    _pn532DumpBlk++;
+}
+
+static uint8_t _pn532SectorFirstBlock(uint8_t sector) {
+    if (sector < 32) {
+        return (uint8_t)(sector * 4);
+    }
+    return (uint8_t)(128 + (sector - 32) * 16);
+}
+
+static uint8_t _pn532SectorBlockCount(uint8_t sector) {
+    return (sector < 32) ? 4 : 16;
+}
+
+uint8_t NiusPN532::dumpToSerial(const uint8_t *key) {
+    _pn532DumpBlk = 0;
+    const uint8_t *k = key ? key : NIUS_KEY_DEFAULT;
+
+    switch (lastCardType) {
+        case NIUS_CARD_MIFARE_1K:
+        case NIUS_CARD_MIFARE_MINI:
+        case NIUS_CARD_MIFARE_4K: {
+            uint8_t sectorCount = 16;
+            if (lastCardType == NIUS_CARD_MIFARE_MINI) {
+                sectorCount = 5;
+            } else if (lastCardType == NIUS_CARD_MIFARE_4K) {
+                sectorCount = 40;
+            }
+
+            uint8_t okSectors = 0;
+            for (uint8_t s = 0; s < sectorCount; s++) {
+                uint8_t first = _pn532SectorFirstBlock(s);
+                uint8_t nblk = _pn532SectorBlockCount(s);
+                uint8_t trailer = (uint8_t)(first + nblk - 1);
+
+                if (authenticate(trailer, NIUS_KEY_A, (uint8_t *)k) != NIUS_OK) {
+                    stopCrypto();
+                    halt();
+                    if (!cardPresentWake()) {
+                        break;
+                    }
+                    continue;
+                }
+                okSectors++;
+                for (uint8_t b = 0; b < nblk; b++) {
+                    uint8_t buf[16];
+                    if (readBlock((uint8_t)(first + b), buf) == NIUS_OK) {
+                        _pn532DumpPrint(buf);
+                    }
+                }
+                stopCrypto();
+                halt();
+                if (!cardPresentWake()) {
+                    break;
+                }
+            }
+            return okSectors;
+        }
+        case NIUS_CARD_MIFARE_UL: {
+            const uint8_t PAGE_CAP = 240;
+            uint8_t pages = 0;
+            for (uint8_t p = 0; p < PAGE_CAP; p = (uint8_t)(p + 4)) {
+                uint8_t buf[16];
+                if (readPage(p, buf) != NIUS_OK) {
+                    break;
+                }
+                pages = (uint8_t)(pages + 4);
+                _pn532DumpPrint(buf);
+            }
+            return pages;
+        }
+        default:
+            NIUS_SERIAL.println(F("(dumpToSerial: this card family is not supported)"));
+            return 0;
+    }
+}
+
 void NiusPN532::printInfo() {
     NIUS_SERIAL.print(F("UID: "));
     NIUS_SERIAL.println(getUID());
@@ -709,6 +815,7 @@ uint8_t NiusPN532::readPage(uint8_t page, uint8_t *data) {
     if (!_ready || !data) {
         return NIUS_ERR_PARAM;
     }
+    /* Ultralight READ returns 4 pages (16 bytes), same as RC522. */
     return readUltralightPage(page, data) ? NIUS_OK : NIUS_ERR_UNKNOWN;
 }
 
@@ -727,14 +834,14 @@ uint8_t NiusPN532::writePage(uint8_t page, uint8_t *data) {
  * Type-2 NDEF (Ultralight / NTAG)
  * ---------------------------------------------------------------------- */
 
-bool NiusPN532::readUltralightPage(uint8_t page, uint8_t *data4) {
+bool NiusPN532::readUltralightPage(uint8_t page, uint8_t *data16) {
     uint8_t send[2] = {0x30, page};
     uint8_t recv[18];
     uint8_t recvLen = sizeof(recv);
-    if (dataExchange(send, 2, recv, recvLen) != NIUS_OK || recvLen < 4) {
+    if (dataExchange(send, 2, recv, recvLen) != NIUS_OK || recvLen < 16) {
         return false;
     }
-    memcpy(data4, recv, 4);
+    memcpy(data16, recv, 16);
     return true;
 }
 

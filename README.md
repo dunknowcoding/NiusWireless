@@ -223,9 +223,10 @@ Test flow: `pn532_i2c_scan` → `pn532_i2c_basic` → `pn532_i2c_adv`.
 Do not generic-scan address `0x24`.
 
 `NiusPN532` mirrors the RC522 card/error surface: `getCardType()` /
-`getCardTypeName()`, `lastError` + `errorName()`, protected
-`writeBlock(..., force=false)`, and `setUid(..., commit=false)` dry-run
-(BCC recomputed; manufacturer bytes preserved).
+`getCardTypeName()`, `lastError` + `errorName()`, `cardPresentWake()`,
+`dumpToSerial()`, protected `writeBlock(..., force=false)`,
+`setUid(..., commit=false)` dry-run (BCC recomputed; manufacturer bytes
+preserved), and Ultralight `readPage()` returning 16 bytes.
 
 ### PN532 — SPI (RobotDyn SAMD21 M0-Mini)
 
@@ -329,11 +330,11 @@ Arduino IDE via **File → Examples → NiusWireless → …**.
 | `nrf24_basic`     | NRF24L01 | Transmit counter packets |
 | `hc12_basic`      | HC-12 | Wireless Serial Monitor bridge |
 | `hc06_basic`      | HC-06 | Bluetooth SPP terminal |
-| `pn532_i2c_scan`  | PN532 (I2C) | Step 1: confirm chip at 0x24 via `begin()` |
-| `pn532_i2c_basic` | PN532 (I2C) | Minimal UID / ATQA / SAK dump |
-| `pn532_i2c_adv`   | PN532 (I2C) | Bus clock, retries, Classic block 4 read / write |
-| `pn532_spi_basic` | PN532 (SPI) | Minimal UID dump — SPI status poll, no IRQ |
-| `pn532_spi_adv`   | PN532 (SPI) | IRQ via `setIRQPin()`, retries, Classic block 4 R/W |
+| `pn532_i2c_scan`  | PN532 (I2C) | Step 1: confirm chip at 0x24; then UID / Type via wake |
+| `pn532_i2c_basic` | PN532 (I2C) | Minimal UID / ATQA / SAK / Type (`cardPresentWake`) |
+| `pn532_i2c_adv`   | PN532 (I2C) | `dumpToSerial`, setUid dry-run, block 4 R/W, optional Key A demo |
+| `pn532_spi_basic` | PN532 (SPI) | Minimal UID / Type — SPI status poll, no IRQ |
+| `pn532_spi_adv`   | PN532 (SPI) | IRQ + same advanced flow as `pn532_i2c_adv` |
 
 ---
 

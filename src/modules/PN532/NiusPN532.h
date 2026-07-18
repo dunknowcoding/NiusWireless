@@ -162,8 +162,25 @@ public:
      */
     bool cardPresent();
 
+    /**
+     * cardPresentWake() — Like cardPresent(), but first cycles the RF field
+     * (off then on) so cards left in HALT after halt() are woken and can be
+     * re-selected. Prefer this in loop() after halt().
+     */
+    bool cardPresentWake();
+
     /** printInfo() — Print UID / ATQA / SAK / Type to Serial. */
     void printInfo();
+
+    /**
+     * dumpToSerial() — Type-adaptive memory dump to NIUS_SERIAL.
+     * Classic 1K / Mini / 4K: auth each sector with Key A
+     * (`key == nullptr` → NIUS_KEY_DEFAULT), print every block in RC522 dump
+     * format, then stopCrypto + halt + cardPresentWake between sectors.
+     * Ultralight / NTAG: readPage in steps of 4 until fail; print 16-byte
+     * chunks. Returns ok sector count (Classic) or pages read (UL).
+     */
+    uint8_t dumpToSerial(const uint8_t *key = nullptr);
 
     /** getUID() — UID of the last detected card as a hex String. */
     String getUID();
@@ -234,10 +251,15 @@ public:
      * MIFARE Ultralight / NTAG page ops
      * ------------------------------------------------------------------ */
 
-    /** readPage() — Read 4 bytes starting at page. */
+    /**
+     * readPage() — Ultralight / NTAG READ: 4 consecutive pages (16 bytes)
+     * starting at `page`. Buffer must hold 16 bytes (same as RC522).
+     */
     uint8_t readPage(uint8_t page, uint8_t *data);
 
-    /** writePage() — Write 4 bytes to a page (avoid UID pages 0–1). */
+    /**
+     * writePage() — Write 4 bytes to one page. Refuses UID/lock pages 0–3.
+     */
     uint8_t writePage(uint8_t page, uint8_t *data);
 
     /* -------------------------------------------------------------------
@@ -309,7 +331,7 @@ private:
     bool    readRegister(uint16_t reg, uint8_t &value);
     uint8_t dataExchange(const uint8_t *send, uint8_t sendLen,
                          uint8_t *recv, uint8_t &recvLen);
-    bool    readUltralightPage(uint8_t page, uint8_t *data4);
+    bool    readUltralightPage(uint8_t page, uint8_t *data16);
     bool    writeUltralightPage(uint8_t page, const uint8_t *data4);
 };
 
