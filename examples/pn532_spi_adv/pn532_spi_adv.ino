@@ -1,30 +1,37 @@
 /*
- * pn532_i2c_adv - PN532 advanced example over I2C.
+ * pn532_spi_adv - PN532 advanced example over SPI with IRQ.
  *
- * Bus clock, firmware info, retries, Classic block 4 read / write / restore.
+ * Uses IRQ (D9) for ready signalling, prints firmware info, sets retries,
+ * then Classic block 4 read / write / restore.
  *
- * --- Wiring ---
- *   PN532 SDA / SCL / VCC / GND — same as pn532_i2c_basic
- *   PN532 IRQ — required on SAMD21 (default D9); optional on ESP32 / others
+ * --- Wiring (RobotDyn SAMD21 M0-Mini — see SAMD21-M0-Mini.pdf) ---
+ *   PN532 SCK/MOSI/MISO -> board ICSP
+ *   PN532 SS            -> D8
+ *   PN532 IRQ           -> D9
+ *   PN532 RSTO          -> board RESET
+ *   PN532 VCC / GND     -> 3V3 / GND
  *
- * ESP32 custom pins: call Wire.begin(SDA, SCL) before nfc.begin().
+ * DIP: Elechouse SPI — SW1=OFF, SW2=ON.
  */
 
 #include <NiusWireless.h>
 #include <string.h>
 
+#ifndef PN532_CS
+  #define PN532_CS   8
+#endif
 #if !defined(PN532_IRQ)
   #if defined(ARDUINO_ARCH_SAMD)
     #define PN532_IRQ  9
   #else
-    #define PN532_IRQ  0xFF
+    #define PN532_IRQ  2
   #endif
 #endif
 #ifndef PN532_RST
   #define PN532_RST  0xFF
 #endif
 
-NiusPN532 nfc(Wire, PN532_IRQ, PN532_RST);
+NiusPN532 nfc(PN532_CS, PN532_RST, true);
 
 static const uint8_t FACTORY_KEY[6] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
@@ -42,21 +49,17 @@ static void printHex16(const uint8_t *block) {
 void setup() {
     NIUS_SERIAL.begin(9600);
 #if defined(ARDUINO_ARCH_SAMD) && defined(USBCON)
-    for (uint16_t ms = 0; ms < 30000 && !NIUS_SERIAL; ++ms) delay(1);
+    for (uint16_t ms = 0; ms < 30000 && !NIUS_SERIAL; ++ms) {
+        delay(1);
+    }
 #endif
-#if defined(ARDUINO_ARCH_ESP32)
-    // Wire.begin(21, 22);   // uncomment: your ESP32 SDA / SCL pins
-#endif
-    NIUS_SERIAL.println(F("NiusWireless PN532 I2C (advanced)"));
+    NIUS_SERIAL.println(F("NiusWireless PN532 SPI (advanced)"));
 
-    nfc.setI2CClock(100000UL);
+    nfc.setIRQPin(PN532_IRQ);
+
     if (!nfc.begin()) {
-        NIUS_SERIAL.println(F("ERROR: PN532 not found at 100 kHz, retry @ 400 kHz..."));
-        nfc.setI2CClock(400000UL);
-        if (!nfc.begin()) {
-            NIUS_SERIAL.println(F("ERROR: PN532 not found. Check wiring / I2C mode."));
-            while (1) { delay(500); }
-        }
+        NIUS_SERIAL.println(F("ERROR: PN532 begin() failed"));
+        while (1) { delay(500); }
     }
 
     uint32_t ver = 0;

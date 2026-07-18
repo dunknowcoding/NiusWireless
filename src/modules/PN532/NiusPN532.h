@@ -5,10 +5,12 @@
  * MIFARE Ultralight, FeliCa and NDEF. It can communicate over I2C, SPI
  * or UART (HSU) — this driver supports I2C and SPI.
  *
- * I2C (4-wire):
+ * I2C:
  *   SDA, SCL — I2C bus (address 0x24, fixed)
  *   VCC, GND
- *   Pass irqPin = 0xFF and rstPin = 0xFF — IRQ / RSTO are SPI-mode pins.
+ *   irqPin — strongly recommended on SAMD21 (Wire has no stretch timeout).
+ *            Pass 0xFF only on boards whose Wire supports setWireTimeout().
+ *   rstPin — optional RSTO reset (0xFF if unwired).
  *
  * SPI:
  *   CS / SCK / MOSI / MISO
@@ -17,10 +19,9 @@
  * --- Reference wiring (RobotDyn SAMD21 M0-Mini / Arduino Zero, I2C) ---
  *   PN532 SDA -> D20 / SDA
  *   PN532 SCL -> D21 / SCL
+ *   PN532 IRQ -> D9  (recommended on SAMD21)
  *   PN532 VCC -> 3V3
  *   PN532 GND -> GND
- *   Set the module jumpers / DIP switches to I2C mode
- *   (typically SEL0=LOW, SEL1=HIGH — check your breakout).
  */
 
 #ifndef NIUS_PN532_H
@@ -68,15 +69,16 @@ public:
 
     /**
      * I2C constructor (default Wire bus).
-     * For 4-wire I2C pass 0xFF, 0xFF (no IRQ / RSTO).
-     * irqPin / rstPin are only used when those lines are actually wired
-     * (SPI mode, or a breakout that brings them out alongside I2C).
+     * For I2C pass the IRQ pin when wired (recommended on SAMD21).
+     * Pass irqPin = 0xFF only if Wire has setWireTimeout() on your core.
+     * Pass rstPin = 0xFF when RSTO is unwired.
      */
     NiusPN532(uint8_t irqPin, uint8_t rstPin);
 
     /**
      * I2C constructor with an explicit TwoWire bus (Wire / Wire1 / …).
-     * For 4-wire I2C pass irqPin = 0xFF and rstPin = 0xFF.
+     * For I2C pass irqPin when wired; 0xFF only with Wire timeout support.
+     * Pass rstPin = 0xFF when RSTO is unwired.
      */
     NiusPN532(TwoWire &bus, uint8_t irqPin, uint8_t rstPin);
 
@@ -115,10 +117,22 @@ public:
      * ------------------------------------------------------------------ */
 
     /**
+     * setIRQPin() — Optional P70_IRQ pin (active LOW). Call before begin().
+     * Used by I2C on SAMD21 and by SPI advanced examples. Pass 0xFF to
+     * disable and fall back to status-byte polling.
+     */
+    void setIRQPin(uint8_t irqPin);
+
+    /**
      * setI2CClock() — Set the Wire bus clock in Hz (default 100000).
      * Call before begin(), or call again later to change the rate.
      */
     void setI2CClock(uint32_t hz);
+
+    /**
+     * setRFField() — RFConfiguration item 1 (AutoRFCA / RF on-off).
+     */
+    bool setRFField(uint8_t autoRFCA, uint8_t rfOn);
 
     /**
      * setPassiveActivationRetries() — MxRtyPassiveActivation (0xFF = try
@@ -207,24 +221,40 @@ private:
     uint16_t _atqa;
     uint8_t  _sak;
     uint32_t _i2cClock;
+    uint8_t  _i2cAddr;
     TwoWire *_i2c;
 
     void initCommon();
 
     bool    wakeup();
+    bool    drainIrqResponse();
     bool    waitReady(uint16_t timeoutMs);
+    bool    waitReadyStatus(uint16_t timeoutMs);
+    bool    waitIrqHigh(uint16_t timeoutMs);
+    bool    waitReadyData(uint16_t timeoutMs);
     bool    writeCommand(const uint8_t *cmd, uint8_t cmdLen);
     int16_t readResponse(uint8_t *buf, uint8_t bufLen, uint16_t timeoutMs);
     bool    sendCommandCheckAck(const uint8_t *cmd, uint8_t cmdLen, uint16_t timeoutMs);
     bool    readAck(uint16_t timeoutMs);
+    bool    readAckBytes(uint8_t *ack);
     bool    isReadyByte();
     bool    i2cReadBytes(uint8_t *buf, uint8_t n);
 
     void    spiBeginTxn();
+    void    spiBeginTxnWake();
     void    spiEndTxn();
     uint8_t spiTransfer(uint8_t data);
+#if defined(ARDUINO_ARCH_SAMD)
+    uint8_t softSpiTransfer(uint8_t data);
+#endif
 
+    bool    inRelease(uint8_t tg);
     bool    samConfig();
+    bool    diagnose(uint8_t numTst, const uint8_t *in, uint8_t inLen,
+                     uint8_t *out, uint8_t &outLen);
+    bool    setParameters(uint8_t flags);
+    bool    writeRegister(uint16_t reg, uint8_t value);
+    bool    readRegister(uint16_t reg, uint8_t &value);
     uint8_t dataExchange(const uint8_t *send, uint8_t sendLen,
                          uint8_t *recv, uint8_t &recvLen);
     bool    readUltralightPage(uint8_t page, uint8_t *data4);

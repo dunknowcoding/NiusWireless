@@ -827,19 +827,31 @@ reads / writes MIFARE Classic blocks, and reads / writes Type-2 NDEF.
 ### Constructors
 
 ```cpp
-NiusPN532 nfc(0xFF, 0xFF);                  // I2C 4-wire (no IRQ / RSTO)
-NiusPN532 nfc(Wire, 0xFF, 0xFF);            // I2C on an explicit TwoWire bus
-NiusPN532 nfc(csPin, rstPin, true);         // SPI (RSTO + CS; IRQ in spi_adv)
+#if defined(ARDUINO_ARCH_SAMD)
+  #define PN532_IRQ 9          // required on SAMD21
+#else
+  #define PN532_IRQ 0xFF       // optional elsewhere
+#endif
+NiusPN532 nfc(PN532_IRQ, 0xFF);
+NiusPN532 nfc(Wire, PN532_IRQ, 0xFF);
+NiusPN532 nfc(csPin, rstPin, true);   // SPI
 ```
 
-I2C is SDA / SCL / VCC / GND only. Pass `0xFF` for irq/rst so the driver
-polls the I2C ready status byte. IRQ / RSTO are SPI-mode pins.
+| Platform | IRQ | Mechanism when IRQ unwired |
+|---|---|---|
+| SAMD21 | **Required** | — (status poll can hang `Wire`) |
+| ESP32, RP2040, UNO R4… | Optional | `WIRE_HAS_TIMEOUT` → I2C status poll |
+
+Pass `rstPin = 0xFF` when RSTO is unwired. SAMConfiguration enables the IRQ
+line automatically when `irqPin != 0xFF` (I2C constructor) or after
+`setIRQPin()` (SPI / late wiring).
 
 ### Key Methods
 
 | Method | Description |
 |--------|-------------|
 | `begin()` | Reset, GetFirmwareVersion, SAMConfiguration |
+| `setIRQPin(pin)` | Optional P70_IRQ (active LOW). Call **before** `begin()` |
 | `setI2CClock(hz)` | Wire clock (default 100 kHz) |
 | `setPassiveActivationRetries(n)` | `InListPassiveTarget` retry count (`0xFF` = forever) |
 | `getFirmwareVersion(ver)` | Raw IC / Ver / Rev / Support word |
@@ -858,7 +870,7 @@ polls the I2C ready status byte. IRQ / RSTO are SPI-mode pins.
 ```cpp
 #include <NiusWireless.h>
 
-NiusPN532 nfc(0xFF, 0xFF);   // 4-wire I2C
+NiusPN532 nfc(PN532_IRQ, 0xFF);   // platform default from examples
 
 void setup() {
     Serial.begin(9600);
@@ -873,6 +885,31 @@ void loop() {
 ```
 
 See `examples/pn532_i2c_basic` and `examples/pn532_i2c_adv`.
+
+### Quick start (SPI)
+
+```cpp
+#include <NiusWireless.h>
+
+NiusPN532 nfc(10, 0xFF, true);   // CS=D10, no RST; SPI mode
+
+void setup() {
+    Serial.begin(9600);
+    delay(1500);
+    // Optional IRQ (advanced): nfc.setIRQPin(9);
+    nfc.begin();
+}
+
+void loop() {
+    if (!nfc.cardPresent()) return;
+    Serial.println(nfc.getUID());
+}
+```
+
+- Basic (no IRQ): `examples/pn532_spi_basic` — polls SPI status byte.
+- Advanced (IRQ): `examples/pn532_spi_adv` — `setIRQPin()` + Classic block R/W.
+
+Elechouse DIP for SPI: **SW1=OFF, SW2=ON**.
 
 ---
 

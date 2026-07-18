@@ -22,6 +22,7 @@ static const uint8_t PN532_CMD_GETFIRMWAREVERSION   = 0x02;
 static const uint8_t PN532_CMD_SAMCONFIGURATION     = 0x14;
 static const uint8_t PN532_CMD_RFCONFIGURATION      = 0x32;
 static const uint8_t PN532_CMD_INLISTPASSIVETARGET  = 0x4A;
+static const uint8_t PN532_CMD_INCOMMUNICATETHRU  = 0x42;
 static const uint8_t PN532_CMD_INDATAEXCHANGE       = 0x40;
 
 /* SPI status / R/W opcodes */
@@ -31,6 +32,25 @@ static const uint8_t PN532_SPI_DATAREAD  = 0x03;
 static const uint8_t PN532_SPI_READY     = 0x01;
 
 static const uint8_t PN532_I2C_READY = 0x01;
+
+static const uint8_t PN532_CMD_DIAGNOSE        = 0x00;
+static const uint8_t PN532_CMD_READREGISTER    = 0x06;
+static const uint8_t PN532_CMD_WRITEREGISTER   = 0x08;
+static const uint8_t PN532_CMD_SETPARAMETERS   = 0x12;
+static const uint8_t PN532_CMD_INRELEASE       = 0x52;
+static const uint8_t PN532_CMD_POWERDOWN       = 0x16;
+static const uint8_t PN532_CMD_INAUTOPOLL      = 0x60;
+
+#ifndef NIUS_PN532_SPI_SCK
+#define NIUS_PN532_SPI_SCK   24
+#endif
+#ifndef NIUS_PN532_SPI_MOSI
+#define NIUS_PN532_SPI_MOSI  23
+#endif
+#ifndef NIUS_PN532_SPI_MISO
+#define NIUS_PN532_SPI_MISO  22
+#endif
+
 
 static const uint8_t PN532_ACK[] = {0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00};
 
@@ -49,6 +69,7 @@ void NiusPN532::initCommon() {
     _atqa     = 0;
     _sak      = 0;
     _i2cClock = 100000UL;
+    _i2cAddr  = NIUS_PN532_I2C_ADDR;
     uidLen    = 0;
     memset(uid, 0, sizeof(uid));
 }
@@ -99,61 +120,90 @@ bool NiusPN532::begin() {
     if (_useSPI) {
         pinMode(_csPin, OUTPUT);
         digitalWrite(_csPin, HIGH);
+#if defined(ARDUINO_ARCH_SAMD)
+        pinMode(NIUS_PN532_SPI_SCK, OUTPUT);
+        digitalWrite(NIUS_PN532_SPI_SCK, LOW);
+        pinMode(NIUS_PN532_SPI_MOSI, OUTPUT);
+        digitalWrite(NIUS_PN532_SPI_MOSI, LOW);
+        pinMode(NIUS_PN532_SPI_MISO, INPUT_PULLUP);
+#else
         SPI.begin();
+#endif
     } else {
 #if defined(ARDUINO_ARCH_SAMD)
-        /* If a previous transaction left SDA low, SAMD Wire can hang on the
-         * next endTransmission. Clock SCL and issue a STOP to free the bus. */
+        /*
+         * If SPI header is still attached (NSS/SCK/MOSI/MISO), idle NSS high
+         * and float the SPI GPIO so they cannot hold the chip out of I2C.
+         * Reference wiring uses SS=D8 and ICSP 24/23/22.
+         */
+        pinMode(8, OUTPUT);
+        digitalWrite(8, HIGH);
+        pinMode(NIUS_PN532_SPI_SCK, INPUT);
+        pinMode(NIUS_PN532_SPI_MOSI, INPUT);
+        pinMode(NIUS_PN532_SPI_MISO, INPUT);
+        /* External pull-ups on the module; enable pads before SERCOM claim. */
         pinMode(SDA, INPUT_PULLUP);
-        pinMode(SCL, OUTPUT);
-        for (uint8_t i = 0; i < 9; i++) {
-            digitalWrite(SCL, HIGH);
-            delayMicroseconds(5);
-            if (digitalRead(SDA) == HIGH) {
-                break;
-            }
-            digitalWrite(SCL, LOW);
-            delayMicroseconds(5);
-        }
-        digitalWrite(SCL, LOW);
-        delayMicroseconds(5);
-        pinMode(SDA, OUTPUT);
-        digitalWrite(SDA, LOW);
-        delayMicroseconds(5);
-        digitalWrite(SCL, HIGH);
-        delayMicroseconds(5);
-        pinMode(SDA, INPUT_PULLUP);   // SDA rises = STOP
-        delayMicroseconds(5);
+        pinMode(SCL, INPUT_PULLUP);
+        delay(1);
 #endif
         _i2c->begin();
         _i2c->setClock(_i2cClock);
 #if defined(WIRE_HAS_TIMEOUT)
-        _i2c->setWireTimeout(3000, true);
+        /* PN532 clock-stretches; give SAMD Wire enough time. */
+        _i2c->setWireTimeout(25000, true);
 #endif
+        delay(50); /* oscillator / interface settle after host reset */
     }
 
     reset();
-    delay(10);
-    /* I2C: Adafruit wakes the PN532 by running SAMConfig (clock stretch).
-     * Do not poke the bus with a bare endTransmission — on SAMD that can
-     * hang forever if SDA/SCL are stuck. */
+    delay(_rstPin != 0xFF ? 50 : 10);
     wakeup();
+    delay(10);
 
-    if (!samConfig()) {
-        delay(50);
-        if (!samConfig()) {
-            return false;
+    /* Adafruit SPI: dummy GetFirmwareVersion to sync host/PN532. */
+    if (_useSPI) {
+        uint8_t syncCmd[] = {PN532_CMD_GETFIRMWAREVERSION};
+        if (sendCommandCheckAck(syncCmd, 1, 1000)) {
+            uint8_t dump[16];
+            (void)readResponse(dump, sizeof(dump), 200);
         }
+        delay(10);
+    } else {
+        if (_irqPin != 0xFF) {
+            if (!drainIrqResponse()) {
+                _irqPin = 0xFF; /* fall back to I2C status polling */
+            }
+        }
+
+        /* Prefer 0x24; accept common alternates if they ACK. Stay on I2C only. */
+        _i2cAddr = NIUS_PN532_I2C_ADDR;
+        {
+            uint8_t candidates[] = { 0x24, 0x48, 0x42, 0x4E };
+            for (uint8_t i = 0; i < sizeof(candidates); i++) {
+                _i2c->beginTransmission(candidates[i]);
+                if (_i2c->endTransmission() == 0) {
+                    _i2cAddr = candidates[i];
+                    break;
+                }
+            }
+        }
+
+        /* Adafruit-style: attempt GetFW even if address probe NACKed. */
+        uint8_t syncCmd[] = {PN532_CMD_GETFIRMWAREVERSION};
+        if (sendCommandCheckAck(syncCmd, 1, 1500)) {
+            uint8_t dump[16];
+            (void)readResponse(dump, sizeof(dump), 500);
+        }
+        delay(10);
     }
 
     uint32_t ver = 0;
     if (!getFirmwareVersion(ver)) {
-        delay(20);
+        delay(50);
         if (!getFirmwareVersion(ver)) {
             return false;
         }
     }
-
     uint8_t ic = (uint8_t)(ver >> 24);
     if (ic != 0x32) {
         return false;
@@ -161,7 +211,31 @@ bool NiusPN532::begin() {
     _fwVer = (uint8_t)(ver >> 16);
     _fwRev = (uint8_t)(ver >> 8);
 
-    setPassiveActivationRetries(0xFF);
+    (void)setPassiveActivationRetries(0x20);
+
+    if (!samConfig()) {
+        delay(50);
+        if (!samConfig()) {
+            return false;
+        }
+    }
+    delay(20);
+
+    /*
+     * Type-A 106 analog via RFConfiguration 0x0A. On this SAMD USB supply,
+     * factory CWGsP=0x3F browns out / kills RX; CWGsP=0x12 reads UIDs reliably.
+     * Must be set with RFConfiguration (not only WriteRegister) so InList uses it.
+     */
+    {
+        uint8_t ana[] = {
+            PN532_CMD_RFCONFIGURATION, 0x0A,
+            0x59, 0xF4, 0x12, 0x11, 0x4D, 0x84, 0x61, 0x6F, 0x26, 0x62, 0x87
+        };
+        if (sendCommandCheckAck(ana, sizeof(ana), 1000)) {
+            uint8_t r[4];
+            (void)readResponse(r, sizeof(r), 500);
+        }
+    }
 
     _ready = true;
     return true;
@@ -191,6 +265,27 @@ String NiusPN532::getVersion() {
     char buf[24];
     snprintf(buf, sizeof(buf), "PN532 v%u.%u", (unsigned)_fwVer, (unsigned)_fwRev);
     return String(buf);
+}
+
+void NiusPN532::setIRQPin(uint8_t irqPin) {
+    _irqPin = irqPin;
+    if (_irqPin != 0xFF) {
+        pinMode(_irqPin, INPUT_PULLUP);
+    }
+}
+
+bool NiusPN532::setRFField(uint8_t autoRFCA, uint8_t rfOn) {
+    uint8_t cmd[] = {
+        PN532_CMD_RFCONFIGURATION,
+        0x01,
+        (uint8_t)((rfOn ? 0x01 : 0x00) | (autoRFCA ? 0x02 : 0x00))
+    };
+    if (!sendCommandCheckAck(cmd, sizeof(cmd), 1000)) {
+        return false;
+    }
+    uint8_t resp[4];
+    int16_t n = readResponse(resp, sizeof(resp), 1000);
+    return (n >= 1 && resp[0] == (uint8_t)(PN532_CMD_RFCONFIGURATION + 1));
 }
 
 void NiusPN532::setI2CClock(uint32_t hz) {
@@ -225,10 +320,22 @@ bool NiusPN532::cardPresent() {
         return false;
     }
 
+    /* Re-apply Type-A analog so firmware InList uses reduced CWGsP. */
+    {
+        uint8_t ana[] = {
+            PN532_CMD_RFCONFIGURATION, 0x0A,
+            0x59, 0xF4, 0x12, 0x11, 0x4D, 0x84, 0x61, 0x6F, 0x26, 0x62, 0x87
+        };
+        if (sendCommandCheckAck(ana, sizeof(ana), 1000)) {
+            uint8_t r[4];
+            (void)readResponse(r, sizeof(r), 500);
+        }
+    }
+
     uint8_t cmd[] = {
         PN532_CMD_INLISTPASSIVETARGET,
-        0x01,   // max targets
-        0x00    // 106 kbps Type A
+        0x01,
+        0x00
     };
 
     if (!sendCommandCheckAck(cmd, sizeof(cmd), 1000)) {
@@ -237,13 +344,13 @@ bool NiusPN532::cardPresent() {
 
     uint8_t resp[32];
     int16_t n = readResponse(resp, sizeof(resp), 1000);
-    if (n < 7) {
+    if (n < 2) {
         return false;
     }
     if (resp[0] != (uint8_t)(PN532_CMD_INLISTPASSIVETARGET + 1)) {
         return false;
     }
-    if (resp[1] < 1) {
+    if (resp[1] < 1 || n < 7) {
         return false;
     }
 
@@ -474,6 +581,90 @@ bool NiusPN532::writeNDEF(uint8_t *buf, uint8_t len) {
  * High-level command helpers
  * ---------------------------------------------------------------------- */
 
+bool NiusPN532::diagnose(uint8_t numTst, const uint8_t *in, uint8_t inLen,
+                               uint8_t *out, uint8_t &outLen) {
+    uint8_t cmd[16];
+    if (inLen > 12) {
+        return false;
+    }
+    cmd[0] = PN532_CMD_DIAGNOSE;
+    cmd[1] = numTst;
+    for (uint8_t i = 0; i < inLen; i++) {
+        cmd[2 + i] = in[i];
+    }
+    if (!sendCommandCheckAck(cmd, (uint8_t)(2 + inLen), 2000)) {
+        return false;
+    }
+    uint8_t resp[32];
+    int16_t n = readResponse(resp, sizeof(resp), 2000);
+    if (n < 1 || resp[0] != (uint8_t)(PN532_CMD_DIAGNOSE + 1)) {
+        return false;
+    }
+    /* Payload after cmd byte: for 0x07 antenna, typically NumTst + Result. */
+    uint8_t payload = (uint8_t)(n - 1);
+    if (payload > outLen) {
+        payload = outLen;
+    }
+    if (out && payload) {
+        memcpy(out, &resp[1], payload);
+    }
+    outLen = payload;
+    return true;
+}
+
+bool NiusPN532::setParameters(uint8_t flags) {
+    uint8_t cmd[] = { PN532_CMD_SETPARAMETERS, flags };
+    if (!sendCommandCheckAck(cmd, sizeof(cmd), 1000)) {
+        return false;
+    }
+    uint8_t resp[4];
+    int16_t n = readResponse(resp, sizeof(resp), 1000);
+    return (n >= 1 && resp[0] == (uint8_t)(PN532_CMD_SETPARAMETERS + 1));
+}
+
+bool NiusPN532::writeRegister(uint16_t reg, uint8_t value) {
+    uint8_t cmd[] = {
+        PN532_CMD_WRITEREGISTER,
+        (uint8_t)(reg >> 8),
+        (uint8_t)(reg & 0xFF),
+        value
+    };
+    if (!sendCommandCheckAck(cmd, sizeof(cmd), 1000)) {
+        return false;
+    }
+    uint8_t resp[4];
+    int16_t n = readResponse(resp, sizeof(resp), 1000);
+    return (n >= 1 && resp[0] == (uint8_t)(PN532_CMD_WRITEREGISTER + 1));
+}
+
+bool NiusPN532::readRegister(uint16_t reg, uint8_t &value) {
+    uint8_t cmd[] = {
+        PN532_CMD_READREGISTER,
+        (uint8_t)(reg >> 8),
+        (uint8_t)(reg & 0xFF)
+    };
+    if (!sendCommandCheckAck(cmd, sizeof(cmd), 1000)) {
+        return false;
+    }
+    uint8_t resp[8];
+    int16_t n = readResponse(resp, sizeof(resp), 1000);
+    if (n < 2 || resp[0] != (uint8_t)(PN532_CMD_READREGISTER + 1)) {
+        return false;
+    }
+    value = resp[1];
+    return true;
+}
+
+bool NiusPN532::inRelease(uint8_t tg) {
+    uint8_t cmd[] = { PN532_CMD_INRELEASE, tg };
+    if (!sendCommandCheckAck(cmd, sizeof(cmd), 1000)) {
+        return false;
+    }
+    uint8_t resp[8];
+    int16_t n = readResponse(resp, sizeof(resp), 1000);
+    return (n >= 1 && resp[0] == (uint8_t)(PN532_CMD_INRELEASE + 1));
+}
+
 bool NiusPN532::getFirmwareVersion(uint32_t &version) {
     uint8_t cmd[] = {PN532_CMD_GETFIRMWAREVERSION};
     if (!sendCommandCheckAck(cmd, 1, 1000)) {
@@ -492,12 +683,13 @@ bool NiusPN532::getFirmwareVersion(uint32_t &version) {
 }
 
 bool NiusPN532::samConfig() {
-    /* Normal mode, timeout = 50ms * 0x14 = 1s; IRQ enable follows wiring */
+    /* SPI: status-byte ready (useIRQ=0). I2C: useIRQ=1 when IRQ wired. */
+    uint8_t useIrq = (!_useSPI && _irqPin != 0xFF) ? 0x01 : 0x00;
     uint8_t cmd[] = {
         PN532_CMD_SAMCONFIGURATION,
         0x01,
         0x14,
-        (uint8_t)((_irqPin != 0xFF) ? 0x01 : 0x00)
+        useIrq
     };
     if (!sendCommandCheckAck(cmd, sizeof(cmd), 1000)) {
         return false;
@@ -506,6 +698,7 @@ bool NiusPN532::samConfig() {
     int16_t n = readResponse(resp, sizeof(resp), 1000);
     return (n >= 1 && resp[0] == (uint8_t)(PN532_CMD_SAMCONFIGURATION + 1));
 }
+
 
 uint8_t NiusPN532::dataExchange(const uint8_t *send, uint8_t sendLen,
                                 uint8_t *recv, uint8_t &recvLen) {
@@ -567,6 +760,23 @@ bool NiusPN532::wakeup() {
     return true;
 }
 
+/* If P70_IRQ is stuck LOW, unread host data is pending — drain until idle. */
+bool NiusPN532::drainIrqResponse() {
+    if (_useSPI || _irqPin == 0xFF) {
+        return true;
+    }
+    uint8_t rounds = 0;
+    while (digitalRead(_irqPin) == LOW && rounds < 16) {
+        rounds++;
+        uint8_t avail = (uint8_t)_i2c->requestFrom((int)_i2cAddr, 32);
+        for (uint8_t i = 0; i < avail; i++) {
+            (void)_i2c->read();
+        }
+        delay(5);
+    }
+    return (digitalRead(_irqPin) == HIGH);
+}
+
 bool NiusPN532::i2cReadBytes(uint8_t *buf, uint8_t n) {
     /* status byte + n data bytes; chunked to fit Wire RX buffers */
     uint8_t got = 0;
@@ -577,7 +787,7 @@ bool NiusPN532::i2cReadBytes(uint8_t *buf, uint8_t n) {
             chunk = (uint8_t)(PN532_I2C_CHUNK - 1);
         }
         uint8_t req = (uint8_t)(chunk + 1);   // + status
-        uint8_t avail = (uint8_t)_i2c->requestFrom((int)NIUS_PN532_I2C_ADDR, (int)req);
+        uint8_t avail = (uint8_t)_i2c->requestFrom((int)_i2cAddr, (int)req);
         if (avail < 2) {
             return false;
         }
@@ -598,7 +808,7 @@ bool NiusPN532::isReadyByte() {
         return (st & PN532_SPI_READY) != 0;
     }
 
-    uint8_t got = (uint8_t)_i2c->requestFrom((int)NIUS_PN532_I2C_ADDR, 1);
+    uint8_t got = (uint8_t)_i2c->requestFrom((int)_i2cAddr, 1);
     if (got == 0 || !_i2c->available()) {
         return false;
     }
@@ -610,21 +820,50 @@ bool NiusPN532::waitReady(uint16_t timeoutMs) {
     uint32_t start = millis();
     while ((millis() - start) < timeoutMs) {
         if (_irqPin != 0xFF) {
-            /* IRQ low is a hint; always confirm with the status byte */
-            if (digitalRead(_irqPin) == LOW && isReadyByte()) {
+            if (digitalRead(_irqPin) == LOW) {
                 return true;
             }
-        }
-        if (isReadyByte()) {
+        } else if (isReadyByte()) {
             return true;
         }
-        delay(2);
+        delay(10);
     }
     return false;
 }
 
+bool NiusPN532::waitReadyStatus(uint16_t timeoutMs) {
+    uint32_t start = millis();
+    while ((millis() - start) < timeoutMs) {
+        if (isReadyByte()) {
+            return true;
+        }
+        delay(10);
+    }
+    return false;
+}
+
+bool NiusPN532::waitIrqHigh(uint16_t timeoutMs) {
+    if (_irqPin == 0xFF) {
+        return true;
+    }
+    uint32_t start = millis();
+    while ((millis() - start) < timeoutMs) {
+        if (digitalRead(_irqPin) == HIGH) {
+            return true;
+        }
+        delay(10);
+    }
+    return false;
+}
+
+bool NiusPN532::waitReadyData(uint16_t timeoutMs) {
+    return _useSPI ? waitReadyStatus(timeoutMs) : waitReady(timeoutMs);
+}
+
 bool NiusPN532::readAck(uint16_t timeoutMs) {
-    if (!waitReady(timeoutMs)) {
+    bool ready = (_useSPI || _irqPin == 0xFF) ? waitReadyStatus(timeoutMs)
+                                              : waitReady(timeoutMs);
+    if (!ready) {
         return false;
     }
 
@@ -643,19 +882,32 @@ bool NiusPN532::readAck(uint16_t timeoutMs) {
     return (memcmp(ack, PN532_ACK, 6) == 0);
 }
 
+bool NiusPN532::readAckBytes(uint8_t *ack) {
+    return readAck(1000) && ack != nullptr;
+}
+
 bool NiusPN532::sendCommandCheckAck(const uint8_t *cmd, uint8_t cmdLen,
                                     uint16_t timeoutMs) {
+    /* I2C+IRQ: drain any pending frame so stuck LOW does not fake ready. */
+    if (!_useSPI && _irqPin != 0xFF) {
+        (void)drainIrqResponse();
+        (void)waitIrqHigh(50); /* best-effort idle; do not hard-fail */
+    }
     if (!writeCommand(cmd, cmdLen)) {
         return false;
     }
-    /* Settle, read ACK, then wait until the response frame is ready
-     * (same two-phase ready wait as Adafruit_PN532::sendCommandCheckAck). */
-    delay(1);
+    delay(2);
     if (!readAck(timeoutMs)) {
         return false;
     }
-    delay(1);
-    return waitReady(timeoutMs);
+    delay(2);
+    if (_useSPI) {
+        return waitReadyStatus(timeoutMs);
+    }
+    if (_irqPin != 0xFF) {
+        return waitReady(timeoutMs);
+    }
+    return waitReadyStatus(timeoutMs);
 }
 
 /* -----------------------------------------------------------------------
@@ -686,7 +938,7 @@ bool NiusPN532::writeCommand(const uint8_t *cmd, uint8_t cmdLen) {
     packet[n++] = PN532_POSTAMBLE;
 
     if (_useSPI) {
-        spiBeginTxn();
+        spiBeginTxnWake();
         spiTransfer(PN532_SPI_DATAWRITE);
         for (uint8_t i = 0; i < n; i++) {
             spiTransfer(packet[i]);
@@ -695,13 +947,16 @@ bool NiusPN532::writeCommand(const uint8_t *cmd, uint8_t cmdLen) {
         return true;
     }
 
-    _i2c->beginTransmission(NIUS_PN532_I2C_ADDR);
+    _i2c->beginTransmission(_i2cAddr);
     _i2c->write(packet, n);
-    return (_i2c->endTransmission() == 0);
+    uint8_t et = _i2c->endTransmission();
+    return (et == 0);
 }
 
 int16_t NiusPN532::readResponse(uint8_t *buf, uint8_t bufLen, uint16_t timeoutMs) {
-    if (!waitReady(timeoutMs)) {
+    bool ready = (_useSPI || _irqPin == 0xFF) ? waitReadyStatus(timeoutMs)
+                                              : waitReady(timeoutMs);
+    if (!ready) {
         return -1;
     }
 
@@ -719,7 +974,7 @@ int16_t NiusPN532::readResponse(uint8_t *buf, uint8_t bufLen, uint16_t timeoutMs
         spiEndTxn();
     } else {
         /* status + body; all responses we use fit in a 32-byte Wire buffer */
-        uint8_t avail = (uint8_t)_i2c->requestFrom((int)NIUS_PN532_I2C_ADDR,
+        uint8_t avail = (uint8_t)_i2c->requestFrom((int)_i2cAddr,
                                                    (int)PN532_I2C_CHUNK);
         if (avail < 7) {
             return -1;
@@ -778,15 +1033,56 @@ int16_t NiusPN532::readResponse(uint8_t *buf, uint8_t bufLen, uint16_t timeoutMs
  * ---------------------------------------------------------------------- */
 
 void NiusPN532::spiBeginTxn() {
-    SPI.beginTransaction(SPISettings(1000000UL, LSBFIRST, SPI_MODE0));
+#if defined(ARDUINO_ARCH_SAMD)
     digitalWrite(_csPin, LOW);
+#else
+    SPI.beginTransaction(SPISettings(1000000, LSBFIRST, SPI_MODE0));
+    digitalWrite(_csPin, LOW);
+#endif
+}
+
+void NiusPN532::spiBeginTxnWake() {
+#if defined(ARDUINO_ARCH_SAMD)
+    digitalWrite(_csPin, LOW);
+    delay(2);
+#else
+    SPI.beginTransaction(SPISettings(1000000, LSBFIRST, SPI_MODE0));
+    digitalWrite(_csPin, LOW);
+    delay(2);
+#endif
 }
 
 void NiusPN532::spiEndTxn() {
     digitalWrite(_csPin, HIGH);
+#if !defined(ARDUINO_ARCH_SAMD)
     SPI.endTransaction();
+#endif
 }
 
+#if defined(ARDUINO_ARCH_SAMD)
+uint8_t NiusPN532::softSpiTransfer(uint8_t data) {
+    uint8_t indata = 0;
+    for (uint8_t bit = 0; bit < 8; bit++) {
+        digitalWrite(NIUS_PN532_SPI_MOSI, (data & 0x01) ? HIGH : LOW);
+        data = (uint8_t)(data >> 1);
+        delayMicroseconds(2);
+        digitalWrite(NIUS_PN532_SPI_SCK, HIGH);
+        delayMicroseconds(2);
+        indata = (uint8_t)(indata >> 1);
+        if (digitalRead(NIUS_PN532_SPI_MISO)) {
+            indata |= 0x80;
+        }
+        digitalWrite(NIUS_PN532_SPI_SCK, LOW);
+        delayMicroseconds(2);
+    }
+    return indata;
+}
+#endif
+
 uint8_t NiusPN532::spiTransfer(uint8_t data) {
+#if defined(ARDUINO_ARCH_SAMD)
+    return softSpiTransfer(data);
+#else
     return SPI.transfer(data);
+#endif
 }

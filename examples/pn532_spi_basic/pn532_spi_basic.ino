@@ -1,21 +1,17 @@
 /*
- * pn532_i2c_basic - Minimal PN532 example over I2C.
+ * pn532_spi_basic - Minimal PN532 example over SPI.
  *
  * Detects an ISO14443A tag and prints its UID / ATQA / SAK.
+ * Uses status-byte ready (no IRQ handler required).
  *
- * --- Wiring ---
- *   PN532 SDA  -> board SDA (D20)
- *   PN532 SCL  -> board SCL (D21)
- *   PN532 VCC  -> 3V3
- *   PN532 GND  -> GND
- *   PN532 IRQ  -> D9 (required on SAMD21)
- *   PN532 RSTO -> board RESET (or a GPIO set as PN532_RST below)
+ * --- Wiring (RobotDyn SAMD21 M0-Mini — SAMD21-M0-Mini.pdf) ---
+ *   PN532 SCK/MOSI/MISO -> ICSP
+ *   PN532 SS            -> D8
+ *   PN532 IRQ           -> D9 (optional)
+ *   PN532 RSTO          -> board RESET
+ *   PN532 VCC / GND     -> 3V3 / GND
  *
- * RobotDyn SAMD21 M0-Mini: SDA=D20, SCL=D21, IRQ=D9.
- *
- * DIP: I2C mode (Elechouse: SW1=ON, SW2=OFF).
- * After changing DIP, the PN532 must see an RSTO/power-on edge so I0/I1
- * re-latch — USB reconnect or RESET button if RSTO is tied to board RESET.
+ * DIP: SW1=OFF, SW2=ON (SPI).
  *
  * --- Try it ---
  *   1. Upload; open Serial Monitor at 9600.
@@ -24,18 +20,14 @@
 
 #include <NiusWireless.h>
 
-#if !defined(PN532_IRQ)
-  #if defined(ARDUINO_ARCH_SAMD)
-    #define PN532_IRQ  9
-  #else
-    #define PN532_IRQ  0xFF
-  #endif
+#ifndef PN532_CS
+  #define PN532_CS   8
 #endif
 #ifndef PN532_RST
   #define PN532_RST  0xFF
 #endif
 
-NiusPN532 nfc(PN532_IRQ, PN532_RST);
+NiusPN532 nfc(PN532_CS, PN532_RST, true);
 
 void setup() {
     NIUS_SERIAL.begin(9600);
@@ -44,7 +36,7 @@ void setup() {
         delay(1);
     }
 #endif
-    NIUS_SERIAL.println(F("NiusWireless PN532 I2C"));
+    NIUS_SERIAL.println(F("NiusWireless PN532 SPI"));
 
     if (!nfc.begin()) {
         NIUS_SERIAL.println(F("ERROR: PN532 begin() failed"));
@@ -54,6 +46,7 @@ void setup() {
     NIUS_SERIAL.print(F("PN532 ready: "));
     NIUS_SERIAL.println(nfc.getVersion());
     NIUS_SERIAL.println(F("Hold an ISO14443A tag near the reader..."));
+    delay(500);
 }
 
 void loop() {
@@ -62,5 +55,5 @@ void loop() {
         return;
     }
     nfc.printInfo();
-    delay(1000);
+    delay(500);
 }
