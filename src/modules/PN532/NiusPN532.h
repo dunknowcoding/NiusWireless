@@ -52,6 +52,9 @@
 #define NIUS_KEY_B  0x61
 #endif
 
+/* Factory key (defined in NiusRC522.cpp; link via NiusWireless.h) */
+extern const uint8_t NIUS_KEY_DEFAULT[NIUS_KEY_DEFAULT_LEN];
+
 /* -----------------------------------------------------------------------
  * Frame / buffer sizes
  * ---------------------------------------------------------------------- */
@@ -136,7 +139,8 @@ public:
 
     /**
      * setPassiveActivationRetries() — MxRtyPassiveActivation (0xFF = try
-     * forever). Default after begin() is 0xFF.
+     * forever). Default after begin() is 0x20; advanced examples often use
+     * 0x01–0x02 for faster empty-field polling.
      */
     bool setPassiveActivationRetries(uint8_t maxRetries);
 
@@ -153,11 +157,12 @@ public:
 
     /**
      * cardPresent() — Scan for an ISO 14443A card in the field.
-     * Populates uid[] / uidLen / atqa / sak on success.
+     * Populates uid[] / uidLen / ATQA / SAK / lastCardType on success.
+     * On failure sets lastError to NIUS_ERR_NOTAG / TIMEOUT / COLLISION / …
      */
     bool cardPresent();
 
-    /** printInfo() — Print UID / ATQA / SAK to Serial. */
+    /** printInfo() — Print UID / ATQA / SAK / Type to Serial. */
     void printInfo();
 
     /** getUID() — UID of the last detected card as a hex String. */
@@ -173,6 +178,18 @@ public:
     uint16_t getATQA() const { return _atqa; }
     uint8_t  getSAK()  const { return _sak; }
 
+    /** getCardType() — NIUS_CARD_* of the last successful detection. */
+    uint8_t getCardType() const { return lastCardType; }
+
+    /** getCardTypeName() — Human-readable name for getCardType(). */
+    String getCardTypeName() const;
+
+    /**
+     * errorName() — Flash string for a NIUS_OK / NIUS_ERR_* code
+     * (detection and MIFARE return codes).
+     */
+    static const __FlashStringHelper *errorName(uint8_t code);
+
     /* -------------------------------------------------------------------
      * MIFARE Classic operations
      * ------------------------------------------------------------------ */
@@ -181,7 +198,7 @@ public:
      * authenticate() — Authenticate a MIFARE Classic sector.
      * blockAddr — block number
      * keyType   — NIUS_KEY_A or NIUS_KEY_B
-     * key       — 6-byte key
+     * key       — 6-byte key (nullptr → NIUS_KEY_DEFAULT)
      * Returns NIUS_OK on success.
      */
     uint8_t authenticate(uint8_t blockAddr, uint8_t keyType, uint8_t *key);
@@ -193,8 +210,35 @@ public:
 
     /**
      * writeBlock() — Write 16 bytes to a MIFARE Classic block.
+     * By default refuses block 0 (UID/manufacturer) and sector trailers
+     * (blocks 3,7,11,…). Pass force=true only from a vetted path such as
+     * setUid() or an explicit trailer rewrite that preserves access bits.
      */
-    uint8_t writeBlock(uint8_t blockAddr, uint8_t *data);
+    uint8_t writeBlock(uint8_t blockAddr, uint8_t *data, bool force = false);
+
+    /**
+     * setUid() — Build / optionally commit a MIFARE Classic block-0 UID
+     * change. Always recomputes BCC = XOR(UID) and preserves manufacturer
+     * bytes from the current block 0. With commit=false (default) only
+     * prints a preview. Requires a magic/CUID card for commit=true.
+     */
+    uint8_t setUid(uint8_t *newUid, uint8_t uidSize, bool commit = false);
+
+    /** stopCrypto() — End the current MIFARE crypto session (InRelease). */
+    void stopCrypto();
+
+    /** halt() — Release the active target so the next scan can re-select. */
+    void halt();
+
+    /* -------------------------------------------------------------------
+     * MIFARE Ultralight / NTAG page ops
+     * ------------------------------------------------------------------ */
+
+    /** readPage() — Read 4 bytes starting at page. */
+    uint8_t readPage(uint8_t page, uint8_t *data);
+
+    /** writePage() — Write 4 bytes to a page (avoid UID pages 0–1). */
+    uint8_t writePage(uint8_t page, uint8_t *data);
 
     /* -------------------------------------------------------------------
      * NDEF operations (MIFARE Ultralight / NFC Type 2 tags)
@@ -208,6 +252,8 @@ public:
      * ------------------------------------------------------------------ */
     uint8_t uid[10];
     uint8_t uidLen;
+    uint8_t lastError;       // last cardPresent() failure reason (or NIUS_OK)
+    uint8_t lastCardType;    // NIUS_CARD_* after successful detection
 
 private:
     uint8_t  _irqPin;
@@ -223,8 +269,14 @@ private:
     uint32_t _i2cClock;
     uint8_t  _i2cAddr;
     TwoWire *_i2c;
+    uint8_t  _mxRtyPassive;
 
     void initCommon();
+
+    bool    applyTypeAAnalog();
+    uint8_t sakToCardType(uint8_t sak) const;
+    uint8_t mapPn532Status(uint8_t status) const;
+    bool    classicBlockOk(uint8_t blockAddr) const;
 
     bool    wakeup();
     bool    drainIrqResponse();

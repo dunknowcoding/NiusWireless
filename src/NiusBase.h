@@ -40,6 +40,24 @@
 #define NIUS_ERR_PARAM      (uint8_t)0x07  // Bad parameter
 #define NIUS_ERR_UNKNOWN    (uint8_t)0xFF  // Unclassified error
 
+/* Card-type identifiers (RC522 / PN532 getCardType) */
+#ifndef NIUS_CARD_UNKNOWN
+#define NIUS_CARD_UNKNOWN      0x00
+#define NIUS_CARD_MIFARE_MINI  0x01  // 320 B, 5 sectors
+#define NIUS_CARD_MIFARE_1K    0x02  // 1 KB,  16 sectors (S50)
+#define NIUS_CARD_MIFARE_4K    0x03  // 4 KB,  40 sectors
+#define NIUS_CARD_MIFARE_UL    0x04  // MIFARE Ultralight
+#define NIUS_CARD_MIFARE_PLUS  0x05  // MIFARE Plus
+#define NIUS_CARD_ISO14443_4   0x06  // ISO 14443-4 compliant
+#define NIUS_CARD_ISO18092     0x07  // ISO 18092 / NFC-IP1
+#define NIUS_CARD_TNP3XXX      0x08  // NXP TNP3xxx
+#define NIUS_CARD_DESFIRE      0x09  // MIFARE DESFire
+#endif
+
+#ifndef NIUS_KEY_DEFAULT_LEN
+#define NIUS_KEY_DEFAULT_LEN  6
+#endif
+
 /* -----------------------------------------------------------------------
  * Board-capability detection macros
  * These help module drivers pick the right Serial / SPI / I2C instance.

@@ -855,15 +855,22 @@ line automatically when `irqPin != 0xFF` (I2C constructor) or after
 | `setI2CClock(hz)` | Wire clock (default 100 kHz) |
 | `setPassiveActivationRetries(n)` | `InListPassiveTarget` retry count (`0xFF` = forever) |
 | `getFirmwareVersion(ver)` | Raw IC / Ver / Rev / Support word |
-| `cardPresent()` | Detect ISO 14443A card (`InListPassiveTarget`) |
-| `printInfo()` | Print UID / ATQA / SAK |
+| `cardPresent()` | Detect ISO 14443A; sets `lastError` / `lastCardType` |
+| `printInfo()` | Print UID / ATQA / SAK / Type |
+| `getCardType()` / `getCardTypeName()` | `NIUS_CARD_*` (same as RC522) |
+| `errorName(code)` | Flash string for `NIUS_OK` / `NIUS_ERR_*` |
 | `getUID()` / `getUIDBytes()` | UID helpers |
 | `getATQA()` / `getSAK()` | Last detection meta |
-| `authenticate(block, keyType, key)` | MIFARE Classic auth |
+| `authenticate(block, keyType, key)` | Classic auth (`key=nullptr` → factory) |
 | `readBlock(block, data)` | Read 16-byte block |
-| `writeBlock(block, data)` | Write 16-byte block |
+| `writeBlock(block, data, force=false)` | Write; refuses block 0 / trailers unless `force` |
+| `setUid(uid, len, commit=false)` | Safe block-0 UID path (BCC + dry-run) |
+| `readPage` / `writePage` | Ultralight / NTAG 4-byte pages |
+| `halt()` / `stopCrypto()` | Release target / end crypto session |
 | `readNDEF(buf, len)` | Read NDEF from Type 2 tag |
 | `writeNDEF(buf, len)` | Write NDEF to Type 2 tag |
+
+Public state: `lastError`, `lastCardType`, `uid[]`, `uidLen`.
 
 ### Quick start (I2C)
 

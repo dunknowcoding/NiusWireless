@@ -70,7 +70,10 @@ void NiusPN532::initCommon() {
     _sak      = 0;
     _i2cClock = 100000UL;
     _i2cAddr  = NIUS_PN532_I2C_ADDR;
-    uidLen    = 0;
+    _mxRtyPassive = 0x20;
+    uidLen       = 0;
+    lastError    = NIUS_ERR_UNKNOWN;
+    lastCardType = NIUS_CARD_UNKNOWN;
     memset(uid, 0, sizeof(uid));
 }
 
@@ -221,21 +224,7 @@ bool NiusPN532::begin() {
     }
     delay(20);
 
-    /*
-     * Type-A 106 analog via RFConfiguration 0x0A. On this SAMD USB supply,
-     * factory CWGsP=0x3F browns out / kills RX; CWGsP=0x12 reads UIDs reliably.
-     * Must be set with RFConfiguration (not only WriteRegister) so InList uses it.
-     */
-    {
-        uint8_t ana[] = {
-            PN532_CMD_RFCONFIGURATION, 0x0A,
-            0x59, 0xF4, 0x12, 0x11, 0x4D, 0x84, 0x61, 0x6F, 0x26, 0x62, 0x87
-        };
-        if (sendCommandCheckAck(ana, sizeof(ana), 1000)) {
-            uint8_t r[4];
-            (void)readResponse(r, sizeof(r), 500);
-        }
-    }
+    (void)applyTypeAAnalog();
 
     _ready = true;
     return true;
@@ -308,7 +297,28 @@ bool NiusPN532::setPassiveActivationRetries(uint8_t maxRetries) {
     }
     uint8_t resp[4];
     int16_t n = readResponse(resp, sizeof(resp), 1000);
-    return (n >= 1 && resp[0] == (uint8_t)(PN532_CMD_RFCONFIGURATION + 1));
+    if (n >= 1 && resp[0] == (uint8_t)(PN532_CMD_RFCONFIGURATION + 1)) {
+        _mxRtyPassive = maxRetries;
+        return true;
+    }
+    return false;
+}
+
+bool NiusPN532::applyTypeAAnalog() {
+    /*
+     * Type-A 106 analog via RFConfiguration 0x0A. On this SAMD USB supply,
+     * factory CWGsP=0x3F browns out / kills RX; CWGsP=0x12 reads UIDs reliably.
+     * Must be set with RFConfiguration (not only WriteRegister) so InList uses it.
+     */
+    uint8_t ana[] = {
+        PN532_CMD_RFCONFIGURATION, 0x0A,
+        0x59, 0xF4, 0x12, 0x11, 0x4D, 0x84, 0x61, 0x6F, 0x26, 0x62, 0x87
+    };
+    if (!sendCommandCheckAck(ana, sizeof(ana), 500)) {
+        return false;
+    }
+    uint8_t r[4];
+    return readResponse(r, sizeof(r), 300) >= 1;
 }
 
 /* -----------------------------------------------------------------------
@@ -316,21 +326,15 @@ bool NiusPN532::setPassiveActivationRetries(uint8_t maxRetries) {
  * ---------------------------------------------------------------------- */
 
 bool NiusPN532::cardPresent() {
+    lastError = NIUS_ERR_UNKNOWN;
+    lastCardType = NIUS_CARD_UNKNOWN;
     if (!_ready) {
+        lastError = NIUS_ERR_PARAM;
         return false;
     }
 
-    /* Re-apply Type-A analog so firmware InList uses reduced CWGsP. */
-    {
-        uint8_t ana[] = {
-            PN532_CMD_RFCONFIGURATION, 0x0A,
-            0x59, 0xF4, 0x12, 0x11, 0x4D, 0x84, 0x61, 0x6F, 0x26, 0x62, 0x87
-        };
-        if (sendCommandCheckAck(ana, sizeof(ana), 1000)) {
-            uint8_t r[4];
-            (void)readResponse(r, sizeof(r), 500);
-        }
-    }
+    /* InList reloads default analog; re-apply CWGsP=0x12 every scan. */
+    (void)applyTypeAAnalog();
 
     uint8_t cmd[] = {
         PN532_CMD_INLISTPASSIVETARGET,
@@ -338,19 +342,34 @@ bool NiusPN532::cardPresent() {
         0x00
     };
 
-    if (!sendCommandCheckAck(cmd, sizeof(cmd), 1000)) {
+    /* Empty-field wait scales with MxRtyPassiveActivation. */
+    uint16_t tmo = 200;
+    if (_mxRtyPassive == 0xFF) {
+        tmo = 1000;
+    } else if (_mxRtyPassive > 4) {
+        tmo = (uint16_t)(100 + (uint16_t)_mxRtyPassive * 25);
+        if (tmo > 1000) {
+            tmo = 1000;
+        }
+    }
+
+    if (!sendCommandCheckAck(cmd, sizeof(cmd), tmo)) {
+        lastError = NIUS_ERR_TIMEOUT;
         return false;
     }
 
     uint8_t resp[32];
-    int16_t n = readResponse(resp, sizeof(resp), 1000);
+    int16_t n = readResponse(resp, sizeof(resp), tmo);
     if (n < 2) {
+        lastError = NIUS_ERR_TIMEOUT;
         return false;
     }
     if (resp[0] != (uint8_t)(PN532_CMD_INLISTPASSIVETARGET + 1)) {
+        lastError = NIUS_ERR_UNKNOWN;
         return false;
     }
     if (resp[1] < 1 || n < 7) {
+        lastError = NIUS_ERR_NOTAG;
         return false;
     }
 
@@ -359,11 +378,14 @@ bool NiusPN532::cardPresent() {
     _sak  = resp[5];
     uint8_t uidLength = resp[6];
     if (uidLength == 0 || uidLength > 10 || (int16_t)(7 + uidLength) > n) {
+        lastError = NIUS_ERR_OVERFLOW;
         return false;
     }
 
     uidLen = uidLength;
     memcpy(uid, &resp[7], uidLen);
+    lastCardType = sakToCardType(_sak);
+    lastError = NIUS_OK;
     return true;
 }
 
@@ -378,6 +400,83 @@ void NiusPN532::printInfo() {
     NIUS_SERIAL.print(F("SAK:  0x"));
     if (_sak < 0x10) NIUS_SERIAL.print('0');
     NIUS_SERIAL.println(_sak, HEX);
+    NIUS_SERIAL.print(F("Type: "));
+    NIUS_SERIAL.println(getCardTypeName());
+}
+
+String NiusPN532::getCardTypeName() const {
+    switch (lastCardType) {
+        case NIUS_CARD_MIFARE_MINI:  return String(F("MIFARE Mini"));
+        case NIUS_CARD_MIFARE_1K:    return String(F("MIFARE Classic 1K"));
+        case NIUS_CARD_MIFARE_4K:    return String(F("MIFARE Classic 4K"));
+        case NIUS_CARD_MIFARE_UL:    return String(F("MIFARE Ultralight"));
+        case NIUS_CARD_MIFARE_PLUS:  return String(F("MIFARE Plus"));
+        case NIUS_CARD_ISO14443_4:   return String(F("ISO 14443-4"));
+        case NIUS_CARD_ISO18092:     return String(F("ISO 18092 (NFC-IP1)"));
+        case NIUS_CARD_TNP3XXX:      return String(F("TNP3xxx"));
+        case NIUS_CARD_DESFIRE:      return String(F("MIFARE DESFire"));
+        default:                     return String(F("Unknown"));
+    }
+}
+
+const __FlashStringHelper *NiusPN532::errorName(uint8_t code) {
+    switch (code) {
+        case NIUS_OK:            return F("OK");
+        case NIUS_ERR_NOTAG:     return F("NOTAG");
+        case NIUS_ERR_TIMEOUT:   return F("TIMEOUT");
+        case NIUS_ERR_CRC:       return F("CRC");
+        case NIUS_ERR_COLLISION: return F("COLLISION");
+        case NIUS_ERR_AUTH:      return F("AUTH");
+        case NIUS_ERR_OVERFLOW:  return F("OVERFLOW");
+        case NIUS_ERR_PARAM:     return F("PARAM");
+        default:                 return F("UNKNOWN");
+    }
+}
+
+uint8_t NiusPN532::sakToCardType(uint8_t sak) const {
+    if (sak & 0x20) {
+        return NIUS_CARD_ISO14443_4;
+    }
+    if (sak & 0x40) {
+        return NIUS_CARD_ISO18092;
+    }
+    switch (sak & 0x7F) {
+        case 0x00: return NIUS_CARD_MIFARE_UL;
+        case 0x09: return NIUS_CARD_MIFARE_MINI;
+        case 0x08: return NIUS_CARD_MIFARE_1K;
+        case 0x18: return NIUS_CARD_MIFARE_4K;
+        case 0x10:
+        case 0x11: return NIUS_CARD_MIFARE_PLUS;
+        default:   return NIUS_CARD_UNKNOWN;
+    }
+}
+
+uint8_t NiusPN532::mapPn532Status(uint8_t status) const {
+    switch (status) {
+        case 0x00: return NIUS_OK;
+        case 0x01: return NIUS_ERR_TIMEOUT;
+        case 0x02: return NIUS_ERR_CRC;
+        case 0x03: return NIUS_ERR_CRC;       /* parity */
+        case 0x04: return NIUS_ERR_UNKNOWN;   /* bitcount */
+        case 0x05: return NIUS_ERR_UNKNOWN;   /* framing */
+        case 0x06: return NIUS_ERR_COLLISION;
+        case 0x0A: return NIUS_ERR_OVERFLOW;
+        case 0x13: return NIUS_ERR_OVERFLOW;  /* buffer overflow */
+        case 0x14: return NIUS_ERR_AUTH;
+        default:   return NIUS_ERR_UNKNOWN;
+    }
+}
+
+bool NiusPN532::classicBlockOk(uint8_t blockAddr) const {
+    if (lastCardType == NIUS_CARD_MIFARE_4K) {
+        return blockAddr <= 255;
+    }
+    if (lastCardType == NIUS_CARD_MIFARE_1K ||
+        lastCardType == NIUS_CARD_MIFARE_MINI) {
+        return blockAddr <= 63;
+    }
+    /* Unknown / not yet typed: allow Classic 1K range only. */
+    return blockAddr <= 63;
 }
 
 String NiusPN532::getUID() {
@@ -413,10 +512,16 @@ bool NiusPN532::getUIDBytes(uint8_t *buf, uint8_t &len) {
  * ---------------------------------------------------------------------- */
 
 uint8_t NiusPN532::authenticate(uint8_t blockAddr, uint8_t keyType, uint8_t *key) {
-    if (!_ready || !key || uidLen < 4) {
+    if (!_ready || uidLen < 4) {
         return NIUS_ERR_PARAM;
     }
     if (keyType != NIUS_KEY_A && keyType != NIUS_KEY_B) {
+        return NIUS_ERR_PARAM;
+    }
+    if (!key) {
+        key = (uint8_t *)NIUS_KEY_DEFAULT;
+    }
+    if (!classicBlockOk(blockAddr)) {
         return NIUS_ERR_PARAM;
     }
 
@@ -439,6 +544,9 @@ uint8_t NiusPN532::readBlock(uint8_t blockAddr, uint8_t *data) {
     if (!_ready || !data) {
         return NIUS_ERR_PARAM;
     }
+    if (!classicBlockOk(blockAddr)) {
+        return NIUS_ERR_PARAM;
+    }
 
     uint8_t send[2] = {0x30, blockAddr};
     uint8_t recv[18];
@@ -454,9 +562,22 @@ uint8_t NiusPN532::readBlock(uint8_t blockAddr, uint8_t *data) {
     return NIUS_OK;
 }
 
-uint8_t NiusPN532::writeBlock(uint8_t blockAddr, uint8_t *data) {
+uint8_t NiusPN532::writeBlock(uint8_t blockAddr, uint8_t *data, bool force) {
     if (!_ready || !data) {
         return NIUS_ERR_PARAM;
+    }
+    if (!classicBlockOk(blockAddr)) {
+        return NIUS_ERR_PARAM;
+    }
+
+    /* Sensitive-block guard — same policy as NiusRC522. */
+    if (!force) {
+        if (blockAddr == 0) {
+            return NIUS_ERR_PARAM; /* use setUid() */
+        }
+        if ((blockAddr & 0x03) == 0x03) {
+            return NIUS_ERR_PARAM; /* sector trailer */
+        }
     }
 
     uint8_t send[18];
@@ -467,6 +588,139 @@ uint8_t NiusPN532::writeBlock(uint8_t blockAddr, uint8_t *data) {
     uint8_t recv[8];
     uint8_t recvLen = sizeof(recv);
     return dataExchange(send, 18, recv, recvLen);
+}
+
+uint8_t NiusPN532::setUid(uint8_t *newUid, uint8_t uidSize, bool commit) {
+    if (!newUid || (uidSize != 4 && uidSize != 7)) {
+        return NIUS_ERR_PARAM;
+    }
+    if (lastCardType != NIUS_CARD_MIFARE_1K &&
+        lastCardType != NIUS_CARD_MIFARE_MINI &&
+        lastCardType != NIUS_CARD_MIFARE_4K) {
+        return NIUS_ERR_PARAM;
+    }
+
+    /* Sector 0 auth first — many cards refuse bare block-0 reads. */
+    uint8_t r = authenticate(3, NIUS_KEY_A, nullptr);
+    if (r != NIUS_OK) {
+        r = authenticate(3, NIUS_KEY_B, nullptr);
+    }
+    if (r != NIUS_OK) {
+        return NIUS_ERR_AUTH;
+    }
+
+    uint8_t origBlock0[16];
+    r = readBlock(0, origBlock0);
+    if (r != NIUS_OK) {
+        stopCrypto();
+        return r;
+    }
+
+    uint8_t newBlock0[16];
+    memcpy(newBlock0, origBlock0, 16);
+    memcpy(newBlock0, newUid, uidSize);
+
+    uint8_t bcc = 0;
+    for (uint8_t i = 0; i < uidSize; i++) {
+        bcc ^= newUid[i];
+    }
+    newBlock0[uidSize] = bcc;
+    /* Bytes uidSize+1..15 preserved (manufacturer / padding). */
+
+    NIUS_SERIAL.println(F("--- setUid preview ---"));
+    NIUS_SERIAL.print(F("  Card:      "));
+    NIUS_SERIAL.println(getCardTypeName());
+    NIUS_SERIAL.print(F("  Old UID:   "));
+    for (uint8_t i = 0; i < uidSize; i++) {
+        if (origBlock0[i] < 0x10) NIUS_SERIAL.print('0');
+        NIUS_SERIAL.print(origBlock0[i], HEX);
+    }
+    NIUS_SERIAL.println();
+    NIUS_SERIAL.print(F("  New UID:   "));
+    for (uint8_t i = 0; i < uidSize; i++) {
+        if (newUid[i] < 0x10) NIUS_SERIAL.print('0');
+        NIUS_SERIAL.print(newUid[i], HEX);
+    }
+    NIUS_SERIAL.println();
+    NIUS_SERIAL.print(F("  Old BCC:   0x"));
+    if (origBlock0[uidSize] < 0x10) NIUS_SERIAL.print('0');
+    NIUS_SERIAL.println(origBlock0[uidSize], HEX);
+    NIUS_SERIAL.print(F("  New BCC:   0x"));
+    if (bcc < 0x10) NIUS_SERIAL.print('0');
+    NIUS_SERIAL.println(bcc, HEX);
+    NIUS_SERIAL.print(F("  Mfr bytes: "));
+    for (uint8_t i = (uint8_t)(uidSize + 1); i <= 7; i++) {
+        if (origBlock0[i] < 0x10) NIUS_SERIAL.print('0');
+        NIUS_SERIAL.print(origBlock0[i], HEX);
+        if (i < 7) NIUS_SERIAL.print(' ');
+    }
+    NIUS_SERIAL.println(F("  (preserved)"));
+
+    if (!commit) {
+        NIUS_SERIAL.println(F("  DRY-RUN: pass commit=true to write (CUID/magic only)."));
+        return NIUS_OK;
+    }
+
+    if (authenticate(3, NIUS_KEY_A, nullptr) != NIUS_OK &&
+        authenticate(3, NIUS_KEY_B, nullptr) != NIUS_OK) {
+        NIUS_SERIAL.println(F("  ERROR: Sector 0 auth failed."));
+        return NIUS_ERR_AUTH;
+    }
+
+    r = writeBlock(0, newBlock0, true);
+    stopCrypto();
+    if (r != NIUS_OK) {
+        NIUS_SERIAL.println(F("  ERROR: writeBlock(0) failed."));
+        return r;
+    }
+
+    halt();
+    if (!cardPresent()) {
+        NIUS_SERIAL.println(F("  ERROR: Card not re-detected after UID write."));
+        return NIUS_ERR_UNKNOWN;
+    }
+    bool uidMatches = (uidLen == uidSize);
+    for (uint8_t i = 0; i < uidSize && uidMatches; i++) {
+        if (uid[i] != newUid[i]) {
+            uidMatches = false;
+        }
+    }
+    if (!uidMatches) {
+        NIUS_SERIAL.println(F("  ERROR: UID mismatch after write."));
+        return NIUS_ERR_UNKNOWN;
+    }
+    NIUS_SERIAL.println(F("  OK: UID changed and verified."));
+    return NIUS_OK;
+}
+
+void NiusPN532::stopCrypto() {
+    if (_ready && _tg) {
+        (void)inRelease(_tg);
+    }
+}
+
+void NiusPN532::halt() {
+    stopCrypto();
+    uidLen = 0;
+    lastCardType = NIUS_CARD_UNKNOWN;
+}
+
+uint8_t NiusPN532::readPage(uint8_t page, uint8_t *data) {
+    if (!_ready || !data) {
+        return NIUS_ERR_PARAM;
+    }
+    return readUltralightPage(page, data) ? NIUS_OK : NIUS_ERR_UNKNOWN;
+}
+
+uint8_t NiusPN532::writePage(uint8_t page, uint8_t *data) {
+    if (!_ready || !data) {
+        return NIUS_ERR_PARAM;
+    }
+    /* Refuse UID / lock pages by default (0..3). */
+    if (page < 4) {
+        return NIUS_ERR_PARAM;
+    }
+    return writeUltralightPage(page, data) ? NIUS_OK : NIUS_ERR_UNKNOWN;
 }
 
 /* -----------------------------------------------------------------------
@@ -724,10 +978,7 @@ uint8_t NiusPN532::dataExchange(const uint8_t *send, uint8_t sendLen,
         return NIUS_ERR_UNKNOWN;
     }
     if (resp[1] != 0x00) {
-        if (resp[1] == 0x14) {
-            return NIUS_ERR_AUTH;
-        }
-        return NIUS_ERR_UNKNOWN;
+        return mapPn532Status(resp[1]);
     }
 
     uint8_t payload = (uint8_t)(n - 2);

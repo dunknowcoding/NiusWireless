@@ -219,7 +219,13 @@ Examples pick the default automatically. Override before compile if needed:
 #include ...                // or edit the #if block in the sketch
 ```
 
-Test flow: `pn532_i2c_scan` → `pn532_i2c_basic`. Do not generic-scan address `0x24`.
+Test flow: `pn532_i2c_scan` → `pn532_i2c_basic` → `pn532_i2c_adv`.
+Do not generic-scan address `0x24`.
+
+`NiusPN532` mirrors the RC522 card/error surface: `getCardType()` /
+`getCardTypeName()`, `lastError` + `errorName()`, protected
+`writeBlock(..., force=false)`, and `setUid(..., commit=false)` dry-run
+(BCC recomputed; manufacturer bytes preserved).
 
 ### PN532 — SPI (RobotDyn SAMD21 M0-Mini)
 

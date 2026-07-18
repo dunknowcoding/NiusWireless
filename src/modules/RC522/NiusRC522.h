@@ -44,19 +44,7 @@
 #include "../../NiusBase.h"
 #include "NiusMFRC522_Reg.h"
 
-/* -----------------------------------------------------------------------
- * Card-type identifiers returned by getCardType()
- * ---------------------------------------------------------------------- */
-#define NIUS_CARD_UNKNOWN      0x00
-#define NIUS_CARD_MIFARE_MINI  0x01  // 320 B, 5 sectors
-#define NIUS_CARD_MIFARE_1K    0x02  // 1 KB,  16 sectors (S50)
-#define NIUS_CARD_MIFARE_4K    0x03  // 4 KB,  40 sectors
-#define NIUS_CARD_MIFARE_UL    0x04  // MIFARE Ultralight
-#define NIUS_CARD_MIFARE_PLUS  0x05  // MIFARE Plus
-#define NIUS_CARD_ISO14443_4   0x06  // ISO 14443-4 compliant
-#define NIUS_CARD_ISO18092     0x07  // ISO 18092 / NFC-IP1
-#define NIUS_CARD_TNP3XXX      0x08  // NXP TNP3xxx
-#define NIUS_CARD_DESFIRE      0x09  // MIFARE DESFire
+/* Card-type identifiers: see NiusBase.h (NIUS_CARD_*). */
 
 /* -----------------------------------------------------------------------
  * Antenna-gain constants for setAntennaGain()
@@ -77,7 +65,6 @@
 /* -----------------------------------------------------------------------
  * Default MIFARE Classic factory key (all 0xFF)
  * ---------------------------------------------------------------------- */
-#define NIUS_KEY_DEFAULT_LEN  6
 extern const uint8_t NIUS_KEY_DEFAULT[NIUS_KEY_DEFAULT_LEN];
 
 /* -----------------------------------------------------------------------
