@@ -5,20 +5,19 @@
  * errors by NIUS_ERR_* name, then runs a safe exercise for that family:
  *
  *   MIFARE Classic 1K / 4K / Mini:
- *     - dumpToSerial() — full Key-A dump (factory key by default)
  *     - setUid(...): always dry-run (BCC + manufacturer preview).
  *       Optional commit writes the *same* UID back (CUID/magic only) so
  *       BCC/layout are verified without changing the card identity.
- *     - Data block 4: read → write marker → read-back → restore
- *     - Optional Key A change on sector 1 trailer (block 7) only — Key B
- *       and access bits are never modified; factory Key A is restored.
+ *     - Data block 4: read / write marker / read-back / restore
+ *     - Optional Key A change on sector 1 trailer (block 7) only
+ *     - dumpToSerial() last (best-effort Key-A dump)
  *
- *   MIFARE Ultralight / NTAG:
+ *   MIFARE Ultralight *   MIFARE Ultralight / NTAG:
  *     - dumpToSerial() — pages until READ fails
  *     - readPage(4) → 16 bytes; writePage(4) marker on first 4 bytes → restore
  *       (pages 0–3 refused by writePage)
  *
- * Loop uses cardPresentWake() so halt()'d cards are re-selected via RF cycle.
+ * Loop: cardPresent() then cardPresentWake() (RF-wake after halt / HALT).
  *
  * --- Safety (Classic) ---
  *   writeBlock() refuses block 0 and sector trailers unless force=true.
@@ -32,6 +31,10 @@
  *   PN532 SDA / SCL / VCC / GND — same as pn532_i2c_basic
  *   PN532 IRQ — required on SAMD21 (default D9); optional elsewhere
  *
+ *
+ * DIP: I2C mode (Elechouse: SW1=ON, SW2=OFF).
+ * To switch I2C / SPI / HSU: cut power first, set the DIP, then repower
+ * so I0/I1 re-latch (USB unplug/replug, or RESET if RSTO → board RESET).
  * ESP32 custom pins: call Wire.begin(SDA, SCL) before nfc.begin().
  *
  * --- Optional compile flags ---
@@ -88,10 +91,9 @@ static bool isTransportAccessBits(const uint8_t *trailer) {
 
 static void op_Classic() {
     NIUS_SERIAL.println(F("--- MIFARE Classic ---"));
-    nfc.dumpToSerial();
 
     /*
-     * UID path (card still selected after dump's final wake).
+     * 1) UID path first (uses uidLen/lastCardType from loop detect).
      * Dry-run always. Optional commit rewrites the *same* UID so BCC /
      * manufacturer layout are verified without changing identity.
      * Stock (non-CUID) cards fail commit — expected.
@@ -108,13 +110,15 @@ static void op_Classic() {
         nfc.stopCrypto();
     }
 
-    if (!nfc.cardPresentWake()) {
+    /* 2) re-detect */
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
         NIUS_SERIAL.print(F("(re-detect after setUid: "));
         NIUS_SERIAL.print(NiusPN532::errorName(nfc.lastError));
         NIUS_SERIAL.println(F(")"));
         return;
     }
 
+    /* 3) authenticate + Block 4 read/write/restore */
     if (nfc.authenticate(4, NIUS_KEY_A, nullptr) != NIUS_OK) {
         NIUS_SERIAL.print(F("(auth block 4 failed: "));
         NIUS_SERIAL.print(NiusPN532::errorName(NIUS_ERR_AUTH));
@@ -147,7 +151,15 @@ static void op_Classic() {
     } else {
         NIUS_SERIAL.println(F("writeBlock(4) failed (data block only)"));
     }
+
+    /* 4) stopCrypto; re-detect */
     nfc.stopCrypto();
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
+        NIUS_SERIAL.print(F("(re-detect after block4: "));
+        NIUS_SERIAL.print(NiusPN532::errorName(nfc.lastError));
+        NIUS_SERIAL.println(F(")"));
+        return;
+    }
 
 #if PN532_ADV_DEMO_KEY_CHANGE
     /*
@@ -192,7 +204,16 @@ static void op_Classic() {
 #else
     NIUS_SERIAL.println(F("(key demo off — define PN532_ADV_DEMO_KEY_CHANGE=1)"));
 #endif
+
+    /* 5) dump last (best-effort; NOTAG after dump does not fail the op) */
+    nfc.dumpToSerial();
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
+        NIUS_SERIAL.print(F("(re-detect after dump: "));
+        NIUS_SERIAL.print(NiusPN532::errorName(nfc.lastError));
+        NIUS_SERIAL.println(F(")"));
+    }
 }
+
 
 static void op_Ultralight() {
     NIUS_SERIAL.println(F("--- MIFARE Ultralight / NTAG ---"));
@@ -273,7 +294,8 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresentWake()) {
+    /* Prefer plain InList; RF-cycle wake only if needed (after halt / HALT). */
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
         /* Occasional idle diagnostic (not every poll). */
         static uint16_t misses;
         if ((++misses % 40) == 0) {

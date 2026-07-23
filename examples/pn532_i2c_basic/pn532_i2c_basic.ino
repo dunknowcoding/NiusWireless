@@ -15,11 +15,11 @@
  * RobotDyn SAMD21 M0-Mini: SDA=D20, SCL=D21, IRQ=D9.
  *
  * DIP: I2C mode (Elechouse: SW1=ON, SW2=OFF).
- * After changing DIP, the PN532 must see an RSTO/power-on edge so I0/I1
- * re-latch — USB reconnect or RESET button if RSTO is tied to board RESET.
+ * To switch I2C / SPI / HSU: cut power first, set the DIP, then repower
+ * so I0/I1 re-latch (USB unplug/replug, or RESET if RSTO → board RESET).
  *
- * Loop: cardPresentWake() → printInfo() (UID / ATQA / SAK / Type) → halt().
- * cardPresentWake() cycles RF so cards left in HALT stay detectable.
+ * Loop: cardPresent() then cardPresentWake() → printInfo() → halt().
+ * Prefer InList; RF-wake only if needed (after halt / HALT).
  *
  * --- Try it ---
  *   1. Upload; open Serial Monitor at 9600.
@@ -61,7 +61,7 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresentWake()) {
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
         delay(50);
         return;
     }

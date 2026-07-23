@@ -728,32 +728,55 @@ Use this as the building block for any custom MIFARE command.
 
 ---
 
-### Public Fields
-
-**Status:** Stub — full implementation in a future release.
+**Status:** Implemented. Enhanced ShockBurst (auto-acknowledge and
+auto-retransmit) is on by default, and dynamic payload length is enabled
+automatically when the silicon accepts it.
 
 ### Constructors
 
 ```cpp
-NiusNRF24L01 radio(cePin, csnPin);                          // Hardware SPI
-NiusNRF24L01 radio(cePin, csnPin, sckPin, mosiPin, misoPin); // Software SPI
+NiusNRF24L01 radio(cePin, csnPin);                           // default SPI bus
+NiusNRF24L01 radio(cePin, csnPin, SPI1);                     // explicit SPI bus
+NiusNRF24L01 radio(cePin, csnPin, sckPin, mosiPin, misoPin); // software SPI
 ```
+
+The explicit-bus constructor lets one board drive two radios at once — see the
+`nrf24_dual_link` example, which runs a complete bidirectional link on a single
+Raspberry Pi Pico using SPI0 and SPI1.
 
 ### Key Methods
 
 | Method | Description |
 |--------|-------------|
-| `begin()` | Initialise the NRF24L01 |
+| `begin()` | Initialise the radio; false when the module does not respond |
+| `getVersion()` | `"NRF24L01+"` or `"NRF24L01"` (auto-detected) |
 | `setChannel(channel)` | Set RF channel 0–125 (2400+ch MHz) |
 | `setDataRate(rate)` | `NIUS_NRF24_250KBPS` / `_1MBPS` / `_2MBPS` |
 | `setPower(level)` | `NIUS_NRF24_PWR_MIN` … `NIUS_NRF24_PWR_MAX` |
-| `openWritingPipe(addr)` | Set TX destination address (5 bytes) |
+| `setAddress(addr, len)` | Local listening address, 3–5 bytes |
+| `setAutoAck(enabled)` | Enable/disable auto-acknowledge on all pipes |
+| `setRetries(delay, count)` | Retransmit spacing `(delay+1)*250 us` and count |
+| `openWritingPipe(addr)` | Set TX destination address |
 | `openReadingPipe(pipe, addr)` | Open RX pipe 0–5 |
 | `startListening()` | Enter RX mode |
 | `stopListening()` | Enter standby/TX mode |
 | `available()` | Check if payload is waiting |
 | `readRadio(buf, len)` | Read payload from RX FIFO |
-| `writeRadio(buf, len)` | Transmit a payload |
+| `writeRadio(buf, len)` | Transmit; true only when the packet was acknowledged |
+| `isPlus()` | True on NRF24L01+ silicon |
+| `hasDynamicPayload()` | True when dynamic payload length is active |
+| `lastSendFailed()` | True when the last send ended in MAX_RT |
+| `getStatus()` | Raw STATUS register |
+| `testCarrier()` | Received-power detector on the current channel |
+
+Both ends of a link must agree on channel, data rate, address width, and
+auto-acknowledge. `writeRadio()` returns true only after the receiver
+acknowledged the packet, so it doubles as a delivery check; use
+`lastSendFailed()` to distinguish exhausted retries from a timeout.
+
+**Power note:** NRF24 modules draw short current bursts on transmit. Fit a
+10 uF capacitor across each module's VCC/GND and supply 3.3 V only — most
+"module not detected" and intermittent-link reports are supply problems.
 
 ---
 
@@ -928,8 +951,7 @@ optional IRQ=D9. Hardware SPI is used by default; soft SPI is a fallback.
 - Basic (no IRQ): `examples/pn532_spi_basic` — polls SPI status byte.
 - Advanced (IRQ): `examples/pn532_spi_adv` — `setIRQPin()` + dump / Classic block R/W.
 
-Elechouse DIP for SPI: **SW1=OFF, SW2=ON**. After changing DIP, apply an
-RSTO / power-on edge (USB reconnect or RESET) so I0/I1 re-latch.
+Elechouse DIP for SPI: **SW1=OFF, SW2=ON**. To switch I2C / SPI / HSU: cut power first, set the DIP, then repower so I0/I1 re-latch (USB unplug/replug, or RESET if RSTO → board RESET).
 
 ---
 

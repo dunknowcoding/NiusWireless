@@ -12,7 +12,10 @@
  *   MISO — SPI data out
  *   IRQ  — interrupt (optional, active LOW)
  *
- * --- Status: STUB — full implementation coming in a future release ---
+ * Dynamic payload length is enabled automatically on NRF24L01+ silicon (and on
+ * clones that accept the ACTIVATE command).  When the chip does not support it
+ * the driver falls back to a fixed 32-byte payload width, so writeRadio() and
+ * readRadio() behave the same either way.
  */
 
 #ifndef NIUS_NRF24L01_H
@@ -47,8 +50,15 @@ public:
      * Constructors
      * ------------------------------------------------------------------ */
 
-    /** Hardware SPI: cePin=chip enable, csnPin=chip select */
+    /** Hardware SPI on the default bus: cePin=chip enable, csnPin=chip select */
     NiusNRF24L01(uint8_t cePin, uint8_t csnPin);
+
+    /**
+     * Hardware SPI on an explicit bus. Use this for a second radio on a board
+     * with more than one SPI peripheral (for example SPI1 on RP2040/RP2350).
+     * The caller owns bus pin routing; this driver only drives CE and CSN.
+     */
+    NiusNRF24L01(uint8_t cePin, uint8_t csnPin, SPIClass &spi);
 
     /** Software SPI */
     NiusNRF24L01(uint8_t cePin, uint8_t csnPin,
@@ -105,6 +115,25 @@ public:
      * Returns true on success.
      */
     bool setAddress(uint8_t *addr, uint8_t len);
+
+    /**
+     * setAutoAck() — Enable or disable Enhanced ShockBurst auto-acknowledge on
+     * every pipe. Both ends of a link must agree. Default: enabled.
+     */
+    bool setAutoAck(bool enabled);
+
+    /**
+     * setRetries() — Auto-retransmit timing and count.
+     * delay — 0..15, wait = (delay + 1) * 250 us
+     * count — 0..15 retransmits (0 disables retransmission)
+     */
+    bool setRetries(uint8_t delay, uint8_t count);
+
+    /** isPlus() — True when NRF24L01+ silicon (250 kbps capable) was detected. */
+    bool isPlus() const { return _plus; }
+
+    /** hasDynamicPayload() — True when dynamic payload length is active. */
+    bool hasDynamicPayload() const { return _dynamicPayload; }
 
     /* -------------------------------------------------------------------
      * Pipe management
@@ -164,17 +193,37 @@ public:
     /** testCarrier() — Returns true if a carrier is detected on the channel. */
     bool testCarrier();
 
+    /**
+     * lastSendFailed() — True when the most recent writeRadio() ended in
+     * MAX_RT (retransmits exhausted) rather than a timeout or success.
+     */
+    bool lastSendFailed() const { return _maxRetryFail; }
+
 private:
-    uint8_t _cePin;
-    uint8_t _csnPin;
-    uint8_t _sckPin;
-    uint8_t _mosiPin;
-    uint8_t _misoPin;
-    bool    _softSPI;
-    bool    _ready;
+    uint8_t   _cePin;
+    uint8_t   _csnPin;
+    uint8_t   _sckPin;
+    uint8_t   _mosiPin;
+    uint8_t   _misoPin;
+    bool      _softSPI;
+    bool      _ready;
+    SPIClass *_spi;            // hardware bus, null while in software-SPI mode
+    bool      _plus;           // NRF24L01+ silicon detected
+    bool      _dynamicPayload; // dynamic payload length active
+    bool      _listening;      // currently in PRIM_RX
+    bool      _maxRetryFail;   // last writeRadio() hit MAX_RT
+    uint8_t   _addrWidth;      // 3..5
+    uint8_t   _payloadSize;    // static width used when DPL is unavailable
 
     uint8_t readReg(uint8_t reg);
     void    writeReg(uint8_t reg, uint8_t val);
+    void    readRegBuf(uint8_t reg, uint8_t *buf, uint8_t len);
+    void    writeRegBuf(uint8_t reg, const uint8_t *buf, uint8_t len);
+    uint8_t sendCommand(uint8_t cmd);
+    void    beginTransfer();
+    void    endTransfer();
+    void    ceHigh();
+    void    ceLow();
     uint8_t spiTransfer(uint8_t data);
     uint8_t softTransfer(uint8_t data);
 };

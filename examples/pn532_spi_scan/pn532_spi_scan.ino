@@ -5,15 +5,15 @@
  * host SPI path is exercised without a generic status-byte probe.
  *
  * After begin(), the loop optionally prints UID / ATQA / SAK / Type via
- * printInfo(), then halt() + cardPresentWake() so HALT'd cards stay detectable.
+ * printInfo(), then halt(); loop prefers cardPresent() then cardPresentWake().
  *
  * --- Wiring ---
  *   PN532 SCK/MOSI/MISO / SS / VCC / GND — same as pn532_spi_basic
  *   IRQ optional (unwired here; status-byte ready)
  *
  * DIP: Elechouse SPI — SW1=OFF, SW2=ON.
- * After changing DIP, the PN532 must see an RSTO/power-on edge so I0/I1
- * re-latch — USB reconnect or RESET button if RSTO is tied to board RESET.
+ * To switch I2C / SPI / HSU: cut power first, set the DIP, then repower
+ * so I0/I1 re-latch (USB unplug/replug, or RESET if RSTO → board RESET).
  *
  * --- Try it ---
  *   1. Upload; open Serial Monitor @ 9600.
@@ -55,7 +55,7 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresentWake()) {
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
         delay(100);
         return;
     }

@@ -5,12 +5,16 @@
  * hang SAMD21 Wire. This sketch uses NiusPN532::begin() instead.
  *
  * After begin(), the loop prints UID / ATQA / SAK / Type via printInfo(),
- * then halt() + cardPresentWake() so HALT'd cards stay detectable.
+ * then halt(); loop prefers cardPresent() then cardPresentWake().
  *
  * --- Wiring ---
  *   PN532 SDA / SCL / VCC / GND — same as pn532_i2c_basic
  *   PN532 IRQ — required on SAMD21 (default D9); optional elsewhere
  *
+ *
+ * DIP: I2C mode (Elechouse: SW1=ON, SW2=OFF).
+ * To switch I2C / SPI / HSU: cut power first, set the DIP, then repower
+ * so I0/I1 re-latch (USB unplug/replug, or RESET if RSTO → board RESET).
  * --- Try it ---
  *   1. Upload; open Serial Monitor @ 9600.
  *   2. Expect "I2C device FOUND: PN532 v1.x".
@@ -53,7 +57,7 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresentWake()) {
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
         delay(100);
         return;
     }

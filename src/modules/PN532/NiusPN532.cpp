@@ -358,6 +358,7 @@ bool NiusPN532::applyTypeAAnalog() {
     /*
      * Type-A 106 analog via RFConfiguration 0x0A. On this SAMD USB supply,
      * factory CWGsP=0x3F browns out / kills RX; CWGsP=0x12 reads UIDs reliably.
+     * 0x1A/0x20 lost InList here — do not raise CWGsP globally for auth.
      * Must be set with RFConfiguration (not only WriteRegister) so InList uses it.
      */
     uint8_t ana[] = {
@@ -383,7 +384,7 @@ bool NiusPN532::cardPresent() {
         return false;
     }
 
-    /* InList reloads default analog; re-apply CWGsP=0x12 every scan. */
+    /* InList reloads default analog; re-apply Type-A analog (CWGsP) every scan. */
     (void)applyTypeAAnalog();
 
     uint8_t cmd[] = {
@@ -436,15 +437,19 @@ bool NiusPN532::cardPresent() {
     memcpy(uid, &resp[7], uidLen);
     lastCardType = sakToCardType(_sak);
     lastError = NIUS_OK;
+    /* InList may restore factory CWGsP; poke CIU_CWGsP only so we do not
+     * RFConfiguration-away the active target before InDataExchange auth. */
+    (void)writeRegister(0x6318, 0x12);
+    delay(5); /* RF settle after CWGsP poke before caller auth */
     return true;
 }
 
 bool NiusPN532::cardPresentWake() {
-    /* RF off/on clears HALT so InListPassiveTarget can re-select. */
+    if (!_ready) { lastError = NIUS_ERR_PARAM; return false; }
     (void)setRFField(1, 0);
     delay(10);
     (void)setRFField(1, 1);
-    delay(10);
+    delay(25);  // tag power-up after field restore
     return cardPresent();
 }
 
@@ -504,9 +509,9 @@ uint8_t NiusPN532::dumpToSerial(const uint8_t *key) {
                 uint8_t trailer = (uint8_t)(first + nblk - 1);
 
                 if (authenticate(trailer, NIUS_KEY_A, (uint8_t *)k) != NIUS_OK) {
-                    stopCrypto();
-                    halt();
-                    if (!cardPresentWake()) {
+                    /* Do not stopCrypto/inRelease on auth fail — may wedge re-select. */
+                    _tg = 0;
+                    if (!cardPresent() && !cardPresentWake()) {
                         break;
                     }
                     continue;
@@ -519,8 +524,8 @@ uint8_t NiusPN532::dumpToSerial(const uint8_t *key) {
                     }
                 }
                 stopCrypto();
-                halt();
-                if (!cardPresentWake()) {
+                _tg = 0;
+                if (!cardPresent() && !cardPresentWake()) {
                     break;
                 }
             }
@@ -681,7 +686,7 @@ uint8_t NiusPN532::authenticate(uint8_t blockAddr, uint8_t keyType, uint8_t *key
         return NIUS_ERR_PARAM;
     }
 
-    /* Auth frame: keyType, block, key[6], uid[uidLen] — same as Adafruit */
+    /* Auth frame: keyType, block, key[6], uid[uidLen] - same as Adafruit */
     uint8_t send[2 + 6 + 10];
     uint8_t n = 0;
     send[n++] = keyType;
@@ -693,6 +698,16 @@ uint8_t NiusPN532::authenticate(uint8_t blockAddr, uint8_t keyType, uint8_t *key
 
     uint8_t recv[16];
     uint8_t recvLen = sizeof(recv);
+    uint8_t st = dataExchange(send, n, recv, recvLen);
+    if (st != NIUS_ERR_AUTH) {
+        return st;
+    }
+    /* One recover: field wake + re-select, then same auth frame once more. */
+    if (!cardPresentWake()) {
+        return st;
+    }
+    (void)writeRegister(0x6318, 0x12);
+    recvLen = sizeof(recv);
     return dataExchange(send, n, recv, recvLen);
 }
 
@@ -856,9 +871,10 @@ void NiusPN532::stopCrypto() {
 }
 
 void NiusPN532::halt() {
+    /* Release target only - keep uid/uidLen/lastCardType/ATQA/SAK for
+     * setUid/authenticate after dumpToSerial() sector boundaries. */
     stopCrypto();
-    uidLen = 0;
-    lastCardType = NIUS_CARD_UNKNOWN;
+    _tg = 0;
 }
 
 uint8_t NiusPN532::readPage(uint8_t page, uint8_t *data) {
@@ -1237,11 +1253,13 @@ bool NiusPN532::isReadyByte() {
 bool NiusPN532::waitReady(uint16_t timeoutMs) {
     uint32_t start = millis();
     while ((millis() - start) < timeoutMs) {
-        if (_irqPin != 0xFF) {
-            if (digitalRead(_irqPin) == LOW) {
-                return true;
-            }
-        } else if (isReadyByte()) {
+        if (_irqPin != 0xFF && digitalRead(_irqPin) == LOW) {
+            return true;
+        }
+        /* Hybrid for ACK / short cmds: IRQ LOW OR status READY.
+         * Do not delay status accept here — a 2ms gate before DATAREAD
+         * broke InList on SPI. Longer responses use waitReadyData(). */
+        if (isReadyByte()) {
             return true;
         }
         delayMicroseconds(100);
@@ -1275,7 +1293,19 @@ bool NiusPN532::waitIrqHigh(uint16_t timeoutMs) {
 }
 
 bool NiusPN532::waitReadyData(uint16_t timeoutMs) {
-    return (_irqPin != 0xFF) ? waitReady(timeoutMs) : waitReadyStatus(timeoutMs);
+    /* Response path: when P70_IRQ is wired, require IRQ LOW — status READY
+     * can assert before the full InDataExchange (auth) frame is clockable. */
+    if (_irqPin != 0xFF) {
+        uint32_t start = millis();
+        while ((millis() - start) < timeoutMs) {
+            if (digitalRead(_irqPin) == LOW) {
+                return true;
+            }
+            delayMicroseconds(100);
+        }
+        return false;
+    }
+    return waitReadyStatus(timeoutMs);
 }
 
 bool NiusPN532::readAck(uint16_t timeoutMs) {
@@ -1319,10 +1349,8 @@ bool NiusPN532::sendCommandCheckAck(const uint8_t *cmd, uint8_t cmdLen,
         return false;
     }
     delay(2);
-    if (_irqPin != 0xFF) {
-        return waitReady(timeoutMs);
-    }
-    return waitReadyStatus(timeoutMs);
+    /* Wait for response payload readiness (IRQ-only when wired). */
+    return waitReadyData(timeoutMs);
 }
 
 /* -----------------------------------------------------------------------
@@ -1369,8 +1397,7 @@ bool NiusPN532::writeCommand(const uint8_t *cmd, uint8_t cmdLen) {
 }
 
 int16_t NiusPN532::readResponse(uint8_t *buf, uint8_t bufLen, uint16_t timeoutMs) {
-    bool ready = (_irqPin != 0xFF) ? waitReady(timeoutMs)
-                                   : waitReadyStatus(timeoutMs);
+    bool ready = waitReadyData(timeoutMs);
     if (!ready) {
         return -1;
     }

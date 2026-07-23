@@ -190,6 +190,15 @@ See `examples/sx1262_basic` for a working configuration.
 SPI: SCK / MOSI / MISO / CSN / CE. Power from **3.3V**, not 5V. Add a 10 µF
 cap across VCC / GND if you see brownouts on TX.
 
+Auto-acknowledge and auto-retransmit are enabled by default, so `writeRadio()`
+returns true only when the receiver acknowledged the packet. Dynamic payload
+length is used automatically on NRF24L01+ silicon.
+
+A board with two SPI peripherals can drive two radios by passing the bus
+explicitly — `NiusNRF24L01 radio(ce, csn, SPI1)`. The `nrf24_dual_link` example
+runs a full bidirectional link on one Raspberry Pi Pico this way, which is a
+quick way to prove wiring and modules before deploying a real two-board link.
+
 ### HC-12 / HC-05 / HC-06
 
 Plain UART — TX / RX cross-connected at 3.3V levels. Use a divider if your
@@ -222,6 +231,9 @@ Examples pick the default automatically. Override before compile if needed:
 Test flow: `pn532_i2c_scan` → `pn532_i2c_basic` → `pn532_i2c_adv`.
 Do not generic-scan address `0x24`.
 
+Elechouse I2C DIP: **SW1=ON, SW2=OFF**.
+To switch I2C / SPI / HSU: cut power first, set the DIP, then repower so I0/I1 re-latch (USB unplug/replug, or RESET if RSTO → board RESET).
+
 `NiusPN532` mirrors the RC522 card/error surface: `getCardType()` /
 `getCardTypeName()`, `lastError` + `errorName()`, `cardPresentWake()`,
 `dumpToSerial()`, protected `writeBlock(..., force=false)`,
@@ -242,8 +254,8 @@ Per `SAMD21-M0-Mini.pdf`:
 | GND | GND | |
 
 Set DIP switches to SPI (Elechouse: **SW1=OFF, SW2=ON**).
-After changing DIP, the PN532 must see an **RSTO / power-on edge** so I0/I1
-re-latch — USB reconnect or the RESET button if RSTO is tied to board RESET.
+
+To switch I2C / SPI / HSU: cut power first, set the DIP, then repower so I0/I1 re-latch (USB unplug/replug, or RESET if RSTO → board RESET).
 
 Host SPI: `SPI.begin()` + `SPISettings` (default **2 MHz**, `setSpiClock()`;
 clamped 100 kHz–4 MHz). Soft SPI on ICSP pins is a fallback if hardware SPI
@@ -337,6 +349,7 @@ Arduino IDE via **File → Examples → NiusWireless → …**.
 | `sx1262_basic`    | SX1262 | Send / receive with SX1262 / SX1268 |
 | `sx1262_adv`      | SX1262 | DCDC, TCXO, DIO2 RF switch, CAD |
 | `nrf24_basic`     | NRF24L01 | Transmit counter packets |
+| `nrf24_dual_link` | NRF24L01 | Two radios on one board; bidirectional link test |
 | `hc12_basic`      | HC-12 | Wireless Serial Monitor bridge |
 | `hc06_basic`      | HC-06 | Bluetooth SPP terminal |
 | `pn532_i2c_scan`  | PN532 (I2C) | Step 1: confirm chip at 0x24; then UID / Type via wake |

@@ -2,10 +2,9 @@
  * pn532_spi_adv - PN532 advanced example over SPI with IRQ.
  *
  * Same card-family flow as pn532_i2c_adv:
- *   dumpToSerial(), setUid dry-run, Classic block-4 roundtrip,
- *   Ultralight 16-byte readPage + 4-byte writePage restore,
- *   optional Key A demo on sector 1 trailer (block 7) only.
- * Loop uses cardPresentWake(); errors via NiusPN532::errorName().
+ *   setUid dry-run, Classic block-1 roundtrip, optional Key A demo,
+ *   dumpToSerial() last; Ultralight readPage + writePage restore.
+ * Loop: cardPresent() then cardPresentWake(); errors via NiusPN532::errorName().
  *
  * --- Wiring (RobotDyn SAMD21 M0-Mini — see SAMD21-M0-Mini.pdf) ---
  *   PN532 SCK/MOSI/MISO -> board ICSP (pins 24 / 23 / 22)
@@ -15,8 +14,8 @@
  *   PN532 VCC / GND     -> 3V3 / GND
  *
  * DIP: Elechouse SPI — SW1=OFF, SW2=ON.
- * After changing DIP, the PN532 must see an RSTO/power-on edge so I0/I1
- * re-latch — USB reconnect or RESET button if RSTO is tied to board RESET.
+ * To switch I2C / SPI / HSU: cut power first, set the DIP, then repower
+ * so I0/I1 re-latch (USB unplug/replug, or RESET if RSTO → board RESET).
  *
  * Optional: -DPN532_ADV_COMMIT_UID=1  -DPN532_ADV_DEMO_KEY_CHANGE=1
  */
@@ -67,9 +66,12 @@ static bool isTransportAccessBits(const uint8_t *trailer) {
 
 static void op_Classic() {
     NIUS_SERIAL.println(F("--- MIFARE Classic ---"));
-    nfc.dumpToSerial();
 
-    /* setUid dry-run first — see pn532_i2c_adv for BCC / commit notes. */
+    /*
+     * Sector 0 session: setUid dry-run (auth trailer 3 + read block 0),
+     * then block 1 R/W on the SAME auth — do not stopCrypto/reselect
+     * between them (SPI auth after InRelease is flaky until warmed up).
+     */
     {
         uint8_t sameUid[10];
         uint8_t sameLen = nfc.uidLen;
@@ -78,50 +80,54 @@ static void op_Classic() {
         if (su != NIUS_OK) {
             NIUS_SERIAL.print(F("setUid: "));
             NIUS_SERIAL.println(NiusPN532::errorName(su));
+            nfc.stopCrypto();
+            return;
         }
-        nfc.stopCrypto();
     }
-    if (!nfc.cardPresentWake()) {
-        NIUS_SERIAL.print(F("(re-detect after setUid: "));
+
+    uint8_t original[16];
+    if (nfc.readBlock(1, original) != NIUS_OK) {
+        /* Session lost — one reselect + auth, then retry read. */
+        nfc.stopCrypto();
+        if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
+            NIUS_SERIAL.println(F("readBlock(1) failed"));
+            return;
+        }
+        if (nfc.authenticate(1, NIUS_KEY_A, nullptr) != NIUS_OK ||
+            nfc.readBlock(1, original) != NIUS_OK) {
+            NIUS_SERIAL.println(F("readBlock(1) failed"));
+            nfc.stopCrypto();
+            return;
+        }
+    }
+    NIUS_SERIAL.print(F("Block 1: "));
+    printHex(original, 16);
+
+    uint8_t marker[16] = {
+        'N', 'i', 'u', 's', 'A', 'd', 'v', '!',
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
+    };
+    if (nfc.writeBlock(1, marker) == NIUS_OK) {
+        uint8_t tmp[16];
+        if (nfc.readBlock(1, tmp) == NIUS_OK) {
+            NIUS_SERIAL.print(F("read-back: "));
+            printHex(tmp, 16);
+        }
+        nfc.writeBlock(1, original);
+        NIUS_SERIAL.println(F("(original block 1 restored)"));
+    } else {
+        NIUS_SERIAL.println(F("writeBlock(1) failed (data block only)"));
+    }
+
+    nfc.stopCrypto();
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
+        NIUS_SERIAL.print(F("(re-detect after block1: "));
         NIUS_SERIAL.print(NiusPN532::errorName(nfc.lastError));
         NIUS_SERIAL.println(F(")"));
         return;
     }
 
-    if (nfc.authenticate(4, NIUS_KEY_A, nullptr) != NIUS_OK) {
-        NIUS_SERIAL.print(F("(auth block 4 failed: "));
-        NIUS_SERIAL.print(NiusPN532::errorName(NIUS_ERR_AUTH));
-        NIUS_SERIAL.println(F(")"));
-        nfc.stopCrypto();
-        return;
-    }
-
-    uint8_t original[16];
-    if (nfc.readBlock(4, original) != NIUS_OK) {
-        NIUS_SERIAL.println(F("readBlock(4) failed"));
-        nfc.stopCrypto();
-        return;
-    }
-    NIUS_SERIAL.print(F("Block 4: "));
-    printHex(original, 16);
-
-    uint8_t marker[16] = {
-        'N', 'i', 'u', 's', 'S', 'P', 'I', '!',
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
-    };
-    if (nfc.writeBlock(4, marker) == NIUS_OK) {
-        uint8_t tmp[16];
-        if (nfc.readBlock(4, tmp) == NIUS_OK) {
-            NIUS_SERIAL.print(F("read-back: "));
-            printHex(tmp, 16);
-        }
-        nfc.writeBlock(4, original);
-        NIUS_SERIAL.println(F("(original block 4 restored)"));
-    }
-    nfc.stopCrypto();
-
 #if PN532_ADV_DEMO_KEY_CHANGE
-    /* Sector 1 / trailer 7 Key A only — see pn532_i2c_adv comments. */
     if (nfc.cardPresentWake() &&
         nfc.authenticate(7, NIUS_KEY_A, nullptr) == NIUS_OK) {
         uint8_t trailer[16];
@@ -141,7 +147,7 @@ static void op_Classic() {
                     nfc.writeBlock(7, trailer, true);
                     NIUS_SERIAL.println(F("  Key A restored to FFFFFFFFFFFF"));
                 } else {
-                    NIUS_SERIAL.println(F("  ERROR: demo Key A auth failed — trying restore"));
+                    NIUS_SERIAL.println(F("  ERROR: demo Key A auth failed"));
                     if (nfc.cardPresentWake() &&
                         nfc.authenticate(7, NIUS_KEY_A, nullptr) == NIUS_OK) {
                         nfc.writeBlock(7, trailer, true);
@@ -149,14 +155,23 @@ static void op_Classic() {
                 }
             }
         } else {
-            NIUS_SERIAL.println(F("(key demo skipped — unexpected access bits)"));
+            NIUS_SERIAL.println(F("(key demo skipped)"));
         }
         nfc.stopCrypto();
     }
 #else
     NIUS_SERIAL.println(F("(key demo off — define PN532_ADV_DEMO_KEY_CHANGE=1)"));
 #endif
+
+    nfc.dumpToSerial();
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
+        NIUS_SERIAL.print(F("(re-detect after dump: "));
+        NIUS_SERIAL.print(NiusPN532::errorName(nfc.lastError));
+        NIUS_SERIAL.println(F(")"));
+    }
 }
+
+
 
 static void op_Ultralight() {
     NIUS_SERIAL.println(F("--- MIFARE Ultralight / NTAG ---"));
@@ -225,13 +240,14 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresentWake()) {
+    /* Prefer plain InList; RF-cycle wake only if needed (after halt / HALT). */
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
         static uint16_t misses;
         if ((++misses % 40) == 0) {
             NIUS_SERIAL.print(F("detect: "));
             NIUS_SERIAL.println(NiusPN532::errorName(nfc.lastError));
         }
-        delay(20);
+        delay(50);
         return;
     }
     nfc.printInfo();

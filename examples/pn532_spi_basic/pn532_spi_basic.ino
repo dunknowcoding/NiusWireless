@@ -3,7 +3,7 @@
  *
  * Detects an ISO14443A tag and prints its UID / ATQA / SAK / Type.
  * Uses status-byte ready when IRQ is unwired (no setIRQPin).
- * After printInfo(), halt() + cardPresentWake() keep HALT'd cards visible.
+ * After printInfo(), halt(); loop prefers cardPresent() then cardPresentWake().
  *
  * --- Wiring (RobotDyn SAMD21 M0-Mini — SAMD21-M0-Mini.pdf) ---
  *   PN532 SCK/MOSI/MISO -> ICSP (pins 24 / 23 / 22)
@@ -13,10 +13,10 @@
  *   PN532 VCC / GND     -> 3V3 / GND
  *
  * DIP: SPI mode (Elechouse: SW1=OFF, SW2=ON).
- * After changing DIP, the PN532 must see an RSTO/power-on edge so I0/I1
- * re-latch — USB reconnect or RESET button if RSTO is tied to board RESET.
+ * To switch I2C / SPI / HSU: cut power first, set the DIP, then repower
+ * so I0/I1 re-latch (USB unplug/replug, or RESET if RSTO → board RESET).
  *
- * Loop: cardPresentWake() → printInfo() (UID / ATQA / SAK / Type) → halt().
+ * Loop: cardPresent() then cardPresentWake() → printInfo() → halt().
  *
  * --- Try it ---
  *   1. Upload; open Serial Monitor at 9600.
@@ -61,7 +61,7 @@ void setup() {
 }
 
 void loop() {
-    if (!nfc.cardPresentWake()) {
+    if (!nfc.cardPresent() && !nfc.cardPresentWake()) {
         delay(50);
         return;
     }

@@ -13,9 +13,14 @@
  *   NRF24 VCC  -> 3.3V  (do NOT connect to 5V)
  *   NRF24 GND  -> GND
  *
- * NOTE: The NRF24L01 driver is a stub in this release.
- *       This sketch compiles but will not transmit/receive until the
- *       full driver is available. Check the NiusWireless releases.
+ * NOTE: Fit a 10 uF capacitor across the module's VCC/GND. NRF24 modules
+ *       draw short current bursts on transmit and are unreliable without it.
+ *       Supply 3.3 V only; the module is not 5 V tolerant.
+ *
+ *       Both boards must use the same channel, data rate, and address.
+ *       writeRadio() returns true only when the receiver acknowledged.
+ *
+ *       To test a link without a second board, see nrf24_dual_link.
  */
 
 #include <NiusWireless.h>

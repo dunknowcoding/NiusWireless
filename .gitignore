@@ -38,6 +38,7 @@ __pycache__/
 *.swp
 *.swo
 .kilo
+.cursor
 *~
 
 # --- OS ---
@@ -46,6 +47,7 @@ Thumbs.db
 desktop.ini
 
 # --- Local hardware docs (do not publish) ---
+dev.md
 SAMD21-M0-Mini.pdf
 SAMD21-M0-Mini.png
 *.local.pdf

@@ -92,6 +92,12 @@ openReadingPipe	KEYWORD2
 setDataRate	KEYWORD2
 setAddress	KEYWORD2
 writeRadio	KEYWORD2
+testCarrier	KEYWORD2
+lastSendFailed	KEYWORD2
+hasDynamicPayload	KEYWORD2
+isPlus	KEYWORD2
+setRetries	KEYWORD2
+setAutoAck	KEYWORD2
 readRadio	KEYWORD2
 
 setFrequency	KEYWORD2
